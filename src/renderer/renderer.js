@@ -12,6 +12,7 @@ let dashRange = 'Today';
 let statsRange = '7';
 let blockedCache = [];
 let trackingOn = true;
+let lastIdleSeconds = 0;
 
 // ---------- helpers ----------
 function fmt(sec) {
@@ -184,13 +185,31 @@ function renderTopApps(apps) {
   });
 }
 
-function applyTrackingUI(tracking, idle) {
+function applyTrackingUI(tracking, idle, idleSecs) {
   trackingOn = tracking;
   const pill = $('#tb-status');
   const txt = $('#tb-status-text');
-  if (!tracking) { pill.classList.add('paused'); txt.textContent = 'Paused'; }
-  else if (idle) { pill.classList.add('paused'); txt.textContent = 'Idle'; }
-  else { pill.classList.remove('paused'); txt.textContent = 'Tracking'; }
+  const hero = $('.hero');
+
+  if (!tracking) {
+    pill.classList.add('paused'); txt.textContent = 'Paused';
+    if (hero) { hero.classList.remove('idle'); hero.classList.add('paused'); }
+  } else if (idle) {
+    pill.classList.add('paused'); txt.textContent = 'Idle';
+    if (hero) { hero.classList.add('idle'); hero.classList.remove('paused'); }
+    // update the idle banner message with how long
+    const msg = $('#hero-idle-msg');
+    if (msg && idleSecs != null) {
+      const m = Math.floor(idleSecs / 60);
+      const s = Math.round(idleSecs % 60);
+      msg.textContent = m > 0
+        ? `לא זוהתה פעילות ${m} דק׳ ${s}ש׳ — הזמן לא נספר`
+        : `לא זוהתה פעילות ${s} שנ׳ — הזמן לא נספר`;
+    }
+  } else {
+    pill.classList.remove('paused'); txt.textContent = 'Tracking';
+    if (hero) { hero.classList.remove('idle'); hero.classList.remove('paused'); }
+  }
   $('#hero-pause').innerHTML = tracking ? '&#10073;&#10073; Pause' : '&#9654; Resume';
 }
 
@@ -321,7 +340,8 @@ api.onTick((p) => {
     $('#sess-apps').textContent = p.session.apps;
     $('#sess-focus').textContent = p.session.focus + '%';
   }
-  applyTrackingUI(trackingOn, p.idle);
+  lastIdleSeconds = p.idleSecs || 0;
+  applyTrackingUI(trackingOn, p.idle, p.idleSecs);
 });
 api.onTrackingChanged((d) => { trackingOn = d.tracking; applyTrackingUI(d.tracking, false); const cb = $('#set-tracking'); if (cb) cb.checked = d.tracking; });
 api.onBlockedHit((d) => toast(`${d.appName} blocked & closed`, true));

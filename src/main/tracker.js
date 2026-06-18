@@ -151,6 +151,7 @@ class Tracker {
     this.onTick({
       currentApp: appName,
       idle: isIdle,
+      idleSecs: Math.round(idleSecs),
       paused,
       counted,
       todaySeconds: this.store.getToday().total,

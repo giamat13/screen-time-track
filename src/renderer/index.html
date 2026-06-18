@@ -61,6 +61,10 @@
             <p class="hero-label" id="hero-label">Today's Screen Time</p>
             <div class="hero-time" id="hero-time">0<small>h</small> 0<small>m</small> 0<small>s</small></div>
             <div class="hero-current"><span class="ico">&#9636;</span> Currently: <span id="hero-current-app">—</span></div>
+            <div class="hero-idle-banner">
+              <span class="ico">&#128564;</span>
+              <span id="hero-idle-msg">לא זוהתה פעילות — הזמן לא נספר</span>
+            </div>
           </div>
         </div>
 
@@ -184,7 +188,7 @@
           <div class="setting"><div><div class="set-title">Start at login</div><div class="subtle">Run automatically in the background 24/7</div></div><label class="switch"><input type="checkbox" id="set-autolaunch" /><span class="slider"></span></label></div>
           <div class="setting"><div><div class="set-title">Minimize to tray on close</div><div class="subtle">Keep tracking when the window is closed</div></div><label class="switch"><input type="checkbox" id="set-tray" /><span class="slider"></span></label></div>
           <div class="setting"><div><div class="set-title">App blocking</div><div class="subtle">Close apps on the block list automatically</div></div><label class="switch"><input type="checkbox" id="set-blocking" /><span class="slider"></span></label></div>
-          <div class="setting"><div><div class="set-title">Idle threshold</div><div class="subtle">Stop counting after this many seconds of no input</div></div><select id="set-idle"><option value="60">60s</option><option value="120">120s</option><option value="300">5 min</option><option value="600">10 min</option></select></div>
+          <div class="setting"><div><div class="set-title">עצור ספירה אחרי חוסר פעילות</div><div class="subtle">אם לא נגעת במחשב כמות זו של זמן — הזמן לא ייספר</div></div><select id="set-idle"><option value="60">1 דקה</option><option value="120">2 דקות</option><option value="180">3 דקות</option><option value="300">5 דקות</option><option value="600">10 דקות</option></select></div>
           <div class="setting"><div><div class="set-title">Sample interval</div><div class="subtle">How often the active app is checked</div></div><select id="set-interval"><option value="1">1s</option><option value="2">2s</option><option value="5">5s</option></select></div>
         </div>
         <div class="card">
