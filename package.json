@@ -1,0 +1,54 @@
+{
+  "name": "screen-time-track",
+  "version": "1.0.0",
+  "description": "Screen Time — a background screen-time tracker for Windows that detects which app you are using and how long.",
+  "main": "src/main/main.js",
+  "scripts": {
+    "postinstall": "node scripts/make-assets.js",
+    "assets": "node scripts/make-assets.js",
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "dist": "electron-builder --win"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.screentime.tracker",
+    "productName": "Screen Time",
+    "copyright": "Copyright © 2026",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "src/main/foreground.ps1"
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "icon": "assets/icon.ico",
+      "artifactName": "ScreenTime-Setup-${version}.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Screen Time",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeader": "assets/icon.png",
+      "include": "build/installer.nsh"
+    }
+  }
+}
