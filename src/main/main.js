@@ -3,6 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const store = require('./store');
 const { Tracker } = require('./tracker');
+const browserBridge = require('./browserBridge');
 
 const isDev = process.argv.includes('--dev');
 const startHidden = process.argv.includes('--hidden');
@@ -33,6 +34,7 @@ function bootstrap() {
     setupPowerEvents();
     setupIpc();
     applyAutoLaunch(store.getSettings().autoLaunch);
+    browserBridge.start();
     startTracker();
 
     if (startHidden || (store.getSettings().minimizeToTray && app.getLoginItemSettings().wasOpenedAtLogin)) {
@@ -47,6 +49,7 @@ function bootstrap() {
   app.on('before-quit', () => {
     isQuitting = true;
     if (tracker) tracker.stop();
+    browserBridge.stop();
     store.flush();
   });
 }
@@ -139,6 +142,7 @@ function startTracker() {
   tracker = new Tracker({
     store,
     getPaused: isPaused,
+    getBrowserState: () => browserBridge.getState(),
     isBlocked: (appName, procName) => {
       const blocked = store.getBlocked();
       const p = (procName || '').toLowerCase().replace(/\.exe$/, '');

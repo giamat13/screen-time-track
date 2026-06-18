@@ -17,7 +17,10 @@ function defaults() {
       pollInterval: 2, // seconds between samples
       autoLaunch: true,
       blockingEnabled: true,
-      minimizeToTray: true
+      minimizeToTray: true,
+      browserDetail: true, // relabel browser time to the real site via the extension
+      countMediaWhenIdle: true, // keep counting while a video/track is playing
+      mediaIdleCap: 600 // after this many idle seconds, stop counting media (you left)
     }
   };
 }

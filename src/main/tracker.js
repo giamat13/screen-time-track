@@ -42,6 +42,46 @@ const NAME_MAP = {
   vlc: 'VLC'
 };
 
+// Chromium-family browsers the bridge extension can run inside.
+const BROWSERS = new Set(['chrome', 'msedge', 'brave', 'opera', 'vivaldi']);
+
+// Hostname -> friendly label. Falls back to the bare hostname when unknown.
+const SITE_MAP = {
+  'youtube.com': 'YouTube',
+  'youtu.be': 'YouTube',
+  'netflix.com': 'Netflix',
+  'twitch.tv': 'Twitch',
+  'github.com': 'GitHub',
+  'stackoverflow.com': 'Stack Overflow',
+  'google.com': 'Google Search',
+  'mail.google.com': 'Gmail',
+  'docs.google.com': 'Google Docs',
+  'drive.google.com': 'Google Drive',
+  'reddit.com': 'Reddit',
+  'twitter.com': 'X (Twitter)',
+  'x.com': 'X (Twitter)',
+  'facebook.com': 'Facebook',
+  'instagram.com': 'Instagram',
+  'linkedin.com': 'LinkedIn',
+  'chatgpt.com': 'ChatGPT',
+  'claude.ai': 'Claude',
+  'web.whatsapp.com': 'WhatsApp Web',
+  'figma.com': 'Figma',
+  'notion.so': 'Notion'
+};
+
+function siteLabel(domain) {
+  if (!domain) return null;
+  const d = String(domain).replace(/^www\./, '');
+  if (SITE_MAP[d]) return SITE_MAP[d];
+  const parts = d.split('.');
+  if (parts.length > 2) {
+    const base = parts.slice(-2).join('.'); // e.g. m.youtube.com -> youtube.com
+    if (SITE_MAP[base]) return SITE_MAP[base];
+  }
+  return d;
+}
+
 function titleCase(s) {
   return String(s).replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -70,6 +110,7 @@ class Tracker {
     this.isBlocked = opts.isBlocked || (() => false);
     this.onBlocked = opts.onBlocked || (() => {});
     this.getPaused = opts.getPaused || (() => false);
+    this.getBrowserState = opts.getBrowserState || (() => null);
     this.proc = null;
     this._stopping = false;
     this.lastTs = null;
@@ -114,11 +155,12 @@ class Tracker {
     try { info = JSON.parse(line); } catch { return; }
     if (info.error) return;
 
-    const appName = friendlyName(info.name, info.desc);
+    let appName = friendlyName(info.name, info.desc);
     const settings = this.store.getSettings();
     const now = Date.now();
 
-    // Blocking takes priority and runs regardless of idle / pause.
+    // Blocking takes priority and runs regardless of idle / pause. Done with
+    // the raw browser/process name so block rules keep matching.
     if (appName && settings.blockingEnabled && this.isBlocked(appName, info.name)) {
       this.onBlocked({ appName, name: info.name, pid: info.pid });
       this.lastTs = now;
@@ -126,8 +168,29 @@ class Tracker {
       return;
     }
 
+    // When a Chromium browser is in front and the bridge extension has a fresh
+    // report, attribute time to the actual site (e.g. "YouTube") and note
+    // whether a video/track is playing.
+    let mediaPlaying = false;
+    if (settings.browserDetail !== false && info.name && BROWSERS.has(info.name.toLowerCase())) {
+      const bs = this.getBrowserState();
+      if (bs && bs.active && bs.domain) {
+        const label = siteLabel(bs.domain);
+        if (label) appName = label;
+        // An ad is not "watching", so it does not count as active media.
+        mediaPlaying = !!bs.playing && !bs.ad;
+      }
+    }
+
     const idleSecs = powerMonitor.getSystemIdleTime();
-    const isIdle = idleSecs >= (settings.idleThreshold || 120);
+    let isIdle = idleSecs >= (settings.idleThreshold || 120);
+    // Watching a video with no input is still real screen time — keep counting,
+    // but only up to a cap: past it we assume you walked away and let it idle,
+    // so background ads / autoplay don't pile up time while you're gone.
+    if (isIdle && mediaPlaying && settings.countMediaWhenIdle !== false &&
+        idleSecs < (settings.mediaIdleCap || 600)) {
+      isIdle = false;
+    }
     const paused = this.getPaused();
 
     let delta = 0;
@@ -184,4 +247,4 @@ class Tracker {
   }
 }
 
-module.exports = { Tracker, friendlyName };
+module.exports = { Tracker, friendlyName, siteLabel };

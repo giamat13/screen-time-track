@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Screen Time Bridge",
+  "version": "1.0.0",
+  "description": "Reports the active tab and media-playback state to the Screen Time desktop app (stays on 127.0.0.1).",
+  "permissions": ["tabs", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}
