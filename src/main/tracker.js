@@ -174,11 +174,24 @@ class Tracker {
     let mediaPlaying = false;
     if (settings.browserDetail !== false && info.name && BROWSERS.has(info.name.toLowerCase())) {
       const bs = this.getBrowserState();
-      if (bs && bs.active && bs.domain) {
-        const label = siteLabel(bs.domain);
-        if (label) appName = label;
-        // An ad is not "watching", so it does not count as active media.
-        mediaPlaying = !!bs.playing && !bs.ad;
+      if (bs) {
+        if (bs.active && bs.domain) {
+          // Known site → use friendly label; unknown site → use page title.
+          const d = String(bs.domain).replace(/^www\./, '');
+          const base = d.split('.').slice(-2).join('.');
+          const knownLabel = SITE_MAP[d] || SITE_MAP[base];
+          if (knownLabel) {
+            appName = knownLabel;
+          } else {
+            appName = (bs.title && bs.title.trim()) ? bs.title.trim() : d;
+          }
+          // An ad is not "watching", so it does not count as active media.
+          mediaPlaying = !!bs.playing && !bs.ad;
+        } else {
+          // Extension is installed but reports no active tab / domain →
+          // this is not our session (or a blank tab); don't count as "Chrome".
+          appName = null;
+        }
       }
     }
 
