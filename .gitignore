@@ -2,3 +2,5 @@ node_modules/
 dist/
 run.log
 *.log
+.vscode/
+dist_build/

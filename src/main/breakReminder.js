@@ -10,6 +10,7 @@ class BreakReminder {
     this._isBeeping = false;
     this._nextCheckAt = null;
     this._activeStartedAt = null; // when the current continuous-presence streak began
+    this._awayAt = null;          // when the user went idle (estimated)
   }
 
   start() {
@@ -23,6 +24,7 @@ class BreakReminder {
     this._isBeeping = false;
     this._nextCheckAt = null;
     this._activeStartedAt = null;
+    this._awayAt = null;
   }
 
   restart() {
@@ -55,23 +57,36 @@ class BreakReminder {
     if (this._isBeeping) return; // absence timer is in charge while beeping
     const settings = this._getSettings();
     const s = settings.breakReminder || {};
-    if (!s.enabled) { this._nextCheckAt = null; this._activeStartedAt = null; return; }
+    if (!s.enabled) { this._nextCheckAt = null; this._activeStartedAt = null; this._awayAt = null; return; }
 
     const idleThreshold = settings.idleThreshold || 120;
     const idleSecs = this._pm.getSystemIdleTime();
     const now = Date.now();
 
     if (idleSecs >= idleThreshold) {
-      // away from the computer — reset the continuous-presence streak
-      this._activeStartedAt = null;
-      this._nextCheckAt = null;
+      // away — record when they left (estimated from idleSecs)
+      if (this._awayAt === null) {
+        this._awayAt = now - idleSecs * 1000;
+      }
+      // after 10 minutes away, reset the streak
+      if ((now - this._awayAt) / 1000 >= 600 && this._activeStartedAt !== null) {
+        this._activeStartedAt = null;
+        this._nextCheckAt = null;
+      }
+      // freeze — don't advance the timer while away
       return;
     }
 
     // present at the computer
     if (this._activeStartedAt === null) {
+      // fresh start (first run or returned after 10+ min away)
       this._activeStartedAt = now;
+    } else if (this._awayAt !== null) {
+      // returning from a short absence — shift start forward so absence isn't counted
+      this._activeStartedAt += now - this._awayAt;
     }
+    this._awayAt = null;
+
     const targetMs = (s.checkIntervalMinutes || 60) * 60 * 1000;
     this._nextCheckAt = this._activeStartedAt + targetMs;
     if (now - this._activeStartedAt >= targetMs) {
