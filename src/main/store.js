@@ -21,7 +21,7 @@ function defaults() {
       mediaIdleCap: 600, // after this many idle seconds, stop counting media (you left)
       breakReminder: {
         enabled: false,
-        checkIntervalMinutes: 75,
+        checkIntervalMinutes: 60,
         beepFrequency: 1000,
         beepDuration: 200,
         beepIntervalSeconds: 0.4,

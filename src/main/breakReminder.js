@@ -4,23 +4,25 @@ class BreakReminder {
   constructor({ getSettings, powerMonitor }) {
     this._getSettings = getSettings;
     this._pm = powerMonitor;
-    this._checkTimer = null;
+    this._tickTimer = null;
     this._absenceTimer = null;
     this._beepProc = null;
     this._isBeeping = false;
     this._nextCheckAt = null;
+    this._activeStartedAt = null; // when the current continuous-presence streak began
   }
 
   start() {
-    this._scheduleCheck();
+    this._startTracking();
   }
 
   stop() {
-    if (this._checkTimer) { clearTimeout(this._checkTimer); this._checkTimer = null; }
+    if (this._tickTimer) { clearInterval(this._tickTimer); this._tickTimer = null; }
     if (this._absenceTimer) { clearInterval(this._absenceTimer); this._absenceTimer = null; }
     this._killBeepProc();
     this._isBeeping = false;
     this._nextCheckAt = null;
+    this._activeStartedAt = null;
   }
 
   restart() {
@@ -41,26 +43,39 @@ class BreakReminder {
     return { isBeeping: this._isBeeping, nextCheckAt: this._nextCheckAt };
   }
 
-  _scheduleCheck() {
+  _startTracking() {
     const s = this._getSettings().breakReminder || {};
-    if (!s.enabled) { this._nextCheckAt = null; return; }
-    const ms = (s.checkIntervalMinutes || 75) * 60 * 1000;
-    this._nextCheckAt = Date.now() + ms;
-    this._checkTimer = setTimeout(() => this._onCheck(), ms);
+    if (!s.enabled) { this._nextCheckAt = null; this._activeStartedAt = null; return; }
+    if (this._tickTimer) return;
+    this._activeStartedAt = null;
+    this._tickTimer = setInterval(() => this._onTick(), 1000);
   }
 
-  _onCheck() {
-    this._checkTimer = null;
+  _onTick() {
+    if (this._isBeeping) return; // absence timer is in charge while beeping
     const settings = this._getSettings();
     const s = settings.breakReminder || {};
-    if (!s.enabled) { this._nextCheckAt = null; return; }
+    if (!s.enabled) { this._nextCheckAt = null; this._activeStartedAt = null; return; }
 
     const idleThreshold = settings.idleThreshold || 120;
     const idleSecs = this._pm.getSystemIdleTime();
-    if (idleSecs < idleThreshold) {
+    const now = Date.now();
+
+    if (idleSecs >= idleThreshold) {
+      // away from the computer — reset the continuous-presence streak
+      this._activeStartedAt = null;
+      this._nextCheckAt = null;
+      return;
+    }
+
+    // present at the computer
+    if (this._activeStartedAt === null) {
+      this._activeStartedAt = now;
+    }
+    const targetMs = (s.checkIntervalMinutes || 60) * 60 * 1000;
+    this._nextCheckAt = this._activeStartedAt + targetMs;
+    if (now - this._activeStartedAt >= targetMs) {
       this._startBeeping();
-    } else {
-      this._scheduleCheck();
     }
   }
 
@@ -97,7 +112,9 @@ class BreakReminder {
     if (this._absenceTimer) { clearInterval(this._absenceTimer); this._absenceTimer = null; }
     this._killBeepProc();
     this._isBeeping = false;
-    this._scheduleCheck();
+    // you took a break — restart the continuous-presence streak from scratch
+    this._activeStartedAt = null;
+    this._nextCheckAt = null;
   }
 
   _killBeepProc() {

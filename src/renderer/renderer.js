@@ -276,7 +276,7 @@ $('#set-reset').addEventListener('click', async () => { await api.resetSession()
 async function loadBreaks() {
   const s = await api.getSettings();
   brkSettings = Object.assign({
-    enabled: false, checkIntervalMinutes: 75,
+    enabled: false, checkIntervalMinutes: 60,
     beepFrequency: 1000, beepDuration: 200, beepIntervalSeconds: 0.4
   }, s.breakReminder || {});
 
