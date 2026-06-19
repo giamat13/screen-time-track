@@ -107,8 +107,6 @@ class Tracker {
   constructor(opts) {
     this.store = opts.store;
     this.onTick = opts.onTick || (() => {});
-    this.isBlocked = opts.isBlocked || (() => false);
-    this.onBlocked = opts.onBlocked || (() => {});
     this.getPaused = opts.getPaused || (() => false);
     this.getBrowserState = opts.getBrowserState || (() => null);
     this.proc = null;
@@ -158,15 +156,6 @@ class Tracker {
     let appName = friendlyName(info.name, info.desc);
     const settings = this.store.getSettings();
     const now = Date.now();
-
-    // Blocking takes priority and runs regardless of idle / pause. Done with
-    // the raw browser/process name so block rules keep matching.
-    if (appName && settings.blockingEnabled && this.isBlocked(appName, info.name)) {
-      this.onBlocked({ appName, name: info.name, pid: info.pid });
-      this.lastTs = now;
-      this.current = appName;
-      return;
-    }
 
     // When a Chromium browser is in front and the bridge extension has a fresh
     // report, attribute time to the actual site (e.g. "YouTube") and note

@@ -10,9 +10,10 @@ const $$ = (s) => Array.from(document.querySelectorAll(s));
 const DONUT_COLORS = ['#2e9bff', '#a78bfa', '#34d399', '#f5a623', '#475569'];
 let dashRange = 'Today';
 let statsRange = '7';
-let blockedCache = [];
 let trackingOn = true;
 let lastIdleSeconds = 0;
+let brkSettings = {};
+let brkStatusInterval = null;
 
 // ---------- helpers ----------
 function fmt(sec) {
@@ -55,12 +56,13 @@ function toast(msg, err) {
 
 // ---------- navigation ----------
 function go(page) {
+  if (brkStatusInterval && page !== 'breaks') { clearInterval(brkStatusInterval); brkStatusInterval = null; }
   $$('.nav-item').forEach((n) => n.classList.toggle('active', n.dataset.page === page));
   $$('.page').forEach((p) => p.classList.toggle('hidden', p.id !== `page-${page}`));
   if (page === 'dashboard') loadDashboard();
   if (page === 'statistics') loadStats();
-  if (page === 'blocking') loadBlocking();
   if (page === 'settings') loadSettings();
+  if (page === 'breaks') loadBreaks();
 }
 $$('.nav-item').forEach((n) => n.addEventListener('click', () => go(n.dataset.page)));
 $('#hamburger').addEventListener('click', () => $('.sidebar').classList.toggle('collapsed'));
@@ -203,8 +205,8 @@ function applyTrackingUI(tracking, idle, idleSecs) {
       const m = Math.floor(idleSecs / 60);
       const s = Math.round(idleSecs % 60);
       msg.textContent = m > 0
-        ? `לא זוהתה פעילות ${m} דק׳ ${s}ש׳ — הזמן לא נספר`
-        : `לא זוהתה פעילות ${s} שנ׳ — הזמן לא נספר`;
+        ? `No activity for ${m}m ${s}s — time not counted`
+        : `No activity for ${s}s — time not counted`;
     }
   } else {
     pill.classList.remove('paused'); txt.textContent = 'Tracking';
@@ -253,64 +255,6 @@ async function loadStats() {
   });
 }
 
-// ---------- blocking ----------
-async function loadBlocking() {
-  const settings = await api.getSettings();
-  $('#blocking-toggle').checked = !!settings.blockingEnabled;
-  blockedCache = await api.listBlocked();
-  renderBlockList();
-  loadRunning();
-}
-function renderBlockList() {
-  const ul = $('#block-list');
-  $('#blocked-count').textContent = blockedCache.length;
-  ul.innerHTML = '';
-  if (!blockedCache.length) { ul.innerHTML = '<li class="subtle">No apps blocked</li>'; return; }
-  blockedCache.forEach((b) => {
-    const li = document.createElement('li');
-    li.innerHTML = `<span>${escapeHtml(b.label)} <span class="subtle small">(${escapeHtml(b.proc)}.exe)</span></span>
-      <button class="x" title="Remove">&#x2715;</button>`;
-    li.querySelector('.x').addEventListener('click', async () => {
-      blockedCache = await api.removeBlocked(b.proc);
-      renderBlockList(); loadRunning();
-      toast(`${b.label} unblocked`);
-    });
-    ul.appendChild(li);
-  });
-}
-async function addBlock(label, proc) {
-  if (!label) return;
-  blockedCache = await api.addBlocked({ label, proc: proc || label });
-  renderBlockList(); loadRunning();
-  toast(`${label} blocked`);
-}
-$('#block-add').addEventListener('click', () => {
-  const v = $('#block-input').value.trim();
-  if (v) { addBlock(v, v); $('#block-input').value = ''; }
-});
-$('#block-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#block-add').click(); });
-$('#blocking-toggle').addEventListener('change', (e) => api.setSettings({ blockingEnabled: e.target.checked }));
-$('#refresh-running').addEventListener('click', () => loadRunning());
-
-async function loadRunning() {
-  const ul = $('#running-list');
-  ul.innerHTML = '<li class="subtle">Loading…</li>';
-  const apps = await api.listRunningApps();
-  ul.innerHTML = '';
-  if (!apps.length) { ul.innerHTML = '<li class="subtle">No visible apps found</li>'; return; }
-  apps.forEach((a) => {
-    const isBlocked = blockedCache.some((b) => b.proc === a.proc);
-    const li = document.createElement('li');
-    li.innerHTML = `<span>${escapeHtml(a.label)}</span>`;
-    const btn = document.createElement('button');
-    btn.className = 'add' + (isBlocked ? ' added' : '');
-    btn.textContent = isBlocked ? 'Blocked' : '+ Block';
-    if (!isBlocked) btn.addEventListener('click', () => addBlock(a.label, a.proc));
-    li.appendChild(btn);
-    ul.appendChild(li);
-  });
-}
-
 // ---------- settings ----------
 async function loadSettings() {
   const s = await api.getSettings();
@@ -324,10 +268,81 @@ async function loadSettings() {
 $('#set-tracking').addEventListener('change', async (e) => { await api.setTracking(e.target.checked); });
 $('#set-autolaunch').addEventListener('change', (e) => api.setSettings({ autoLaunch: e.target.checked }));
 $('#set-tray').addEventListener('change', (e) => api.setSettings({ minimizeToTray: e.target.checked }));
-$('#set-blocking').addEventListener('change', (e) => api.setSettings({ blockingEnabled: e.target.checked }));
 $('#set-idle').addEventListener('change', (e) => api.setSettings({ idleThreshold: parseInt(e.target.value, 10) }));
 $('#set-interval').addEventListener('change', (e) => { api.setSettings({ pollInterval: parseInt(e.target.value, 10) }); toast('Restart to apply new interval'); });
 $('#set-reset').addEventListener('click', async () => { await api.resetSession(); toast('Session reset'); if (!$('#page-dashboard').classList.contains('hidden')) loadDashboard(); });
+
+// ---------- break reminder ----------
+async function loadBreaks() {
+  const s = await api.getSettings();
+  brkSettings = Object.assign({
+    enabled: false, checkIntervalMinutes: 75,
+    beepFrequency: 1000, beepDuration: 200, beepIntervalSeconds: 0.4
+  }, s.breakReminder || {});
+
+  $('#brk-enabled').checked = !!brkSettings.enabled;
+  $('#brk-interval').value = brkSettings.checkIntervalMinutes;
+  $('#brk-freq').value = brkSettings.beepFrequency;
+  $('#brk-dur').value = brkSettings.beepDuration;
+  $('#brk-beep-int').value = brkSettings.beepIntervalSeconds;
+  updateBrkLabels();
+  await updateBrkStatus();
+
+  if (brkStatusInterval) clearInterval(brkStatusInterval);
+  brkStatusInterval = setInterval(updateBrkStatus, 10000);
+}
+
+async function updateBrkStatus() {
+  const status = await api.getBreakStatus();
+  if (!brkSettings.enabled) {
+    $('#brk-status-title').textContent = 'Disabled';
+    $('#brk-status-sub').textContent = 'Enable to receive break reminders';
+    return;
+  }
+  if (status.isBeeping) {
+    $('#brk-status-title').textContent = '🔔 Ringing now!';
+    $('#brk-status-sub').textContent = 'Get up! Take a break — the alarm will stop when you leave the computer';
+    return;
+  }
+  if (status.nextCheckAt) {
+    const mins = Math.max(0, Math.round((status.nextCheckAt - Date.now()) / 60000));
+    $('#brk-status-title').textContent = `Next reminder in ${mins}m`;
+    $('#brk-status-sub').textContent = 'Will only ring if you\'re at the computer during the check';
+  } else {
+    $('#brk-status-title').textContent = 'Active';
+    $('#brk-status-sub').textContent = 'Waiting for the next check cycle';
+  }
+}
+
+function updateBrkLabels() {
+  const mins = parseInt($('#brk-interval').value);
+  $('#brk-interval-val').textContent = mins >= 60
+    ? `${Math.floor(mins / 60)}h ${mins % 60 ? (mins % 60) + 'm' : ''}`.trim()
+    : `${mins}m`;
+  $('#brk-freq-val').textContent = `${$('#brk-freq').value} Hz`;
+  $('#brk-dur-val').textContent = `${$('#brk-dur').value}ms`;
+  $('#brk-beep-int-val').textContent = `${parseFloat($('#brk-beep-int').value).toFixed(1)}s`;
+}
+
+async function saveBrkSettings() {
+  brkSettings = {
+    enabled: $('#brk-enabled').checked,
+    checkIntervalMinutes: parseInt($('#brk-interval').value),
+    beepFrequency: parseInt($('#brk-freq').value),
+    beepDuration: parseInt($('#brk-dur').value),
+    beepIntervalSeconds: parseFloat($('#brk-beep-int').value),
+  };
+  await api.setSettings({ breakReminder: brkSettings });
+  await updateBrkStatus();
+}
+
+$('#brk-enabled').addEventListener('change', saveBrkSettings);
+$('#brk-test').addEventListener('click', () => api.testBreak());
+['brk-interval', 'brk-freq', 'brk-dur', 'brk-beep-int'].forEach((id) => {
+  const el = $(`#${id}`);
+  el.addEventListener('input', updateBrkLabels);
+  el.addEventListener('change', saveBrkSettings);
+});
 
 // ---------- live updates ----------
 api.onTick((p) => {
@@ -344,7 +359,6 @@ api.onTick((p) => {
   applyTrackingUI(trackingOn, p.idle, p.idleSecs);
 });
 api.onTrackingChanged((d) => { trackingOn = d.tracking; applyTrackingUI(d.tracking, false); const cb = $('#set-tracking'); if (cb) cb.checked = d.tracking; });
-api.onBlockedHit((d) => toast(`${d.appName} blocked & closed`, true));
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

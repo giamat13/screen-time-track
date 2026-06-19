@@ -248,6 +248,14 @@ select { background: var(--bg); border: 1px solid var(--border); color: var(--te
 .setting:last-child { border-bottom: none; }
 .set-title { font-weight: 600; }
 
+/* ---------- break reminder ---------- */
+.slider-ctrl { display: flex; align-items: center; gap: 12px; min-width: 240px; }
+.slider-ctrl input[type=range] { flex: 1; min-width: 120px; }
+.slider-val { color: var(--accent); font-weight: 600; width: 76px; text-align: right; font-size: 13px; flex-shrink: 0; }
+input[type=range] { -webkit-appearance: none; height: 4px; background: var(--grey); border-radius: 3px; outline: none; cursor: pointer; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); cursor: pointer; box-shadow: 0 0 0 3px rgba(46,155,255,.2); }
+input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 3px; }
+
 /* ---------- toast ---------- */
 .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: #1b1e27; border: 1px solid var(--border); color: var(--text); padding: 11px 18px; border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.4); z-index: 100; }
 .toast.err { border-color: rgba(226,58,58,.4); }

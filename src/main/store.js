@@ -10,17 +10,22 @@ function defaults() {
     version: 1,
     installedAt: new Date().toISOString(),
     days: {}, // 'YYYY-MM-DD' -> { apps: { name: seconds }, total, firstSeen, lastSeen }
-    blocked: [], // [{ label, proc }]
     settings: {
       tracking: true,
       idleThreshold: 120, // seconds with no input => not counted
       pollInterval: 2, // seconds between samples
       autoLaunch: true,
-      blockingEnabled: true,
       minimizeToTray: true,
       browserDetail: true, // relabel browser time to the real site via the extension
       countMediaWhenIdle: true, // keep counting while a video/track is playing
-      mediaIdleCap: 600 // after this many idle seconds, stop counting media (you left)
+      mediaIdleCap: 600, // after this many idle seconds, stop counting media (you left)
+      breakReminder: {
+        enabled: false,
+        checkIntervalMinutes: 75,
+        beepFrequency: 1000,
+        beepDuration: 200,
+        beepIntervalSeconds: 0.4,
+      }
     }
   };
 }
@@ -34,8 +39,10 @@ function load() {
       const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
       data = Object.assign(defaults(), parsed);
       data.settings = Object.assign(defaults().settings, parsed.settings || {});
+      if (parsed.settings?.breakReminder) {
+        data.settings.breakReminder = Object.assign(defaults().settings.breakReminder, parsed.settings.breakReminder);
+      }
       data.days = parsed.days || {};
-      data.blocked = parsed.blocked || [];
     }
   } catch (e) {
     console.error('[store] load failed:', e.message);
@@ -111,27 +118,11 @@ function dayTotal(offset = 0) {
   return day ? day.total : 0;
 }
 
-// settings + blocked
 function getSettings() { return data.settings; }
 function setSettings(partial) {
   data.settings = Object.assign({}, data.settings, partial || {});
   flush();
   return data.settings;
-}
-function getBlocked() { return data.blocked; }
-function addBlocked(entry) {
-  if (!entry || !entry.label) return data.blocked;
-  const proc = (entry.proc || entry.label).toLowerCase().replace(/\.exe$/, '');
-  if (!data.blocked.some((b) => b.proc === proc)) {
-    data.blocked.push({ label: entry.label, proc });
-    flush();
-  }
-  return data.blocked;
-}
-function removeBlocked(proc) {
-  data.blocked = data.blocked.filter((b) => b.proc !== proc);
-  flush();
-  return data.blocked;
 }
 
 module.exports = {
@@ -145,8 +136,5 @@ module.exports = {
   dayTotal,
   getSettings,
   setSettings,
-  getBlocked,
-  addBlocked,
-  removeBlocked,
   raw: () => data
 };

@@ -4,6 +4,7 @@ const { spawn } = require('child_process');
 const store = require('./store');
 const { Tracker } = require('./tracker');
 const browserBridge = require('./browserBridge');
+const { BreakReminder } = require('./breakReminder');
 
 const isDev = process.argv.includes('--dev');
 const startHidden = process.argv.includes('--hidden');
@@ -11,10 +12,10 @@ const startHidden = process.argv.includes('--hidden');
 let win = null;
 let tray = null;
 let tracker = null;
+let breakReminder = null;
 let isQuitting = false;
 let locked = false;
 let suspended = false;
-let lastBlockNotify = 0;
 
 const ASSETS = path.join(__dirname, '..', '..', 'assets');
 
@@ -36,6 +37,7 @@ function bootstrap() {
     applyAutoLaunch(store.getSettings().autoLaunch);
     browserBridge.start();
     startTracker();
+    startBreakReminder();
 
     if (startHidden || (store.getSettings().minimizeToTray && app.getLoginItemSettings().wasOpenedAtLogin)) {
       if (win) win.hide();
@@ -49,6 +51,7 @@ function bootstrap() {
   app.on('before-quit', () => {
     isQuitting = true;
     if (tracker) tracker.stop();
+    if (breakReminder) breakReminder.stop();
     browserBridge.stop();
     store.flush();
   });
@@ -138,43 +141,21 @@ function isPaused() {
   return !store.getSettings().tracking || locked || suspended;
 }
 
+function startBreakReminder() {
+  breakReminder = new BreakReminder({ getSettings: () => store.getSettings(), powerMonitor });
+  breakReminder.start();
+}
+
 function startTracker() {
   tracker = new Tracker({
     store,
     getPaused: isPaused,
     getBrowserState: () => browserBridge.getState(),
-    isBlocked: (appName, procName) => {
-      const blocked = store.getBlocked();
-      const p = (procName || '').toLowerCase().replace(/\.exe$/, '');
-      const label = (appName || '').toLowerCase();
-      return blocked.some((b) => b.proc === p || b.label.toLowerCase() === label);
-    },
-    onBlocked: handleBlocked,
     onTick: (payload) => {
       if (win && !win.isDestroyed()) win.webContents.send('tick', payload);
     }
   });
   tracker.start();
-}
-
-function handleBlocked({ appName, pid }) {
-  if (pid && pid > 4) {
-    try {
-      spawn('taskkill', ['/PID', String(pid), '/F', '/T'], { windowsHide: true });
-    } catch {}
-  }
-  const now = Date.now();
-  if (now - lastBlockNotify > 4000) {
-    lastBlockNotify = now;
-    if (Notification.isSupported()) {
-      new Notification({
-        title: 'App blocked',
-        body: `${appName} was closed because it is on your block list.`,
-        icon: path.join(ASSETS, 'icon.png')
-      }).show();
-    }
-  }
-  if (win && !win.isDestroyed()) win.webContents.send('blocked-hit', { appName });
 }
 
 function setTracking(on) {
@@ -244,30 +225,6 @@ function computeDashboard(range) {
   };
 }
 
-function runningApps() {
-  return new Promise((resolve) => {
-    const ps = spawn('powershell.exe', [
-      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
-      "Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -ne '' } | ForEach-Object { $l = $_.Description; if (-not $l) { $l = $_.ProcessName }; [pscustomobject]@{ proc = $_.ProcessName; label = $l } } | Sort-Object label -Unique | ConvertTo-Json -Compress"
-    ], { windowsHide: true });
-    let out = '';
-    ps.stdout.on('data', (d) => (out += d.toString()));
-    ps.on('exit', () => {
-      try {
-        const parsed = JSON.parse(out || '[]');
-        const arr = Array.isArray(parsed) ? parsed : [parsed];
-        resolve(arr.filter((a) => a && a.proc).map((a) => ({
-          proc: String(a.proc).toLowerCase(),
-          label: a.label || a.proc
-        })));
-      } catch {
-        resolve([]);
-      }
-    });
-    ps.on('error', () => resolve([]));
-  });
-}
-
 // ---- IPC ------------------------------------------------------------------
 function setupIpc() {
   ipcMain.handle('dashboard:get', (_e, range) => computeDashboard(range));
@@ -289,16 +246,18 @@ function setupIpc() {
       refreshTrayMenu();
       if (win && !win.isDestroyed()) win.webContents.send('tracking-changed', { tracking: partial.tracking });
     }
+    if (partial && partial.breakReminder && breakReminder) {
+      breakReminder.restart();
+    }
     return next;
   });
+
+  ipcMain.handle('breaks:testBeep', () => { if (breakReminder) breakReminder.testBeep(); });
+  ipcMain.handle('breaks:getStatus', () => breakReminder ? breakReminder.getStatus() : { isBeeping: false, nextCheckAt: null });
   ipcMain.handle('tracking:set', (_e, on) => { setTracking(on); return store.getSettings().tracking; });
   ipcMain.handle('tracking:toggle', () => { setTracking(!store.getSettings().tracking); return store.getSettings().tracking; });
   ipcMain.handle('session:reset', () => { tracker.resetSession(); return tracker.getStatus(); });
 
-  ipcMain.handle('blocked:list', () => store.getBlocked());
-  ipcMain.handle('blocked:add', (_e, entry) => store.addBlocked(entry));
-  ipcMain.handle('blocked:remove', (_e, proc) => store.removeBlocked(proc));
-  ipcMain.handle('apps:running', () => runningApps());
 
   ipcMain.handle('win:control', (_e, action) => {
     if (!win) return;
