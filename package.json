@@ -34,11 +34,13 @@
         { "target": "nsis", "arch": ["x64"] }
       ],
       "icon": "assets/icon.ico",
-      "artifactName": "ScreenTime-Setup-${version}.exe"
+      "artifactName": "ScreenTime-Setup-${version}.exe",
+      "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
+      "allowElevation": false,
       "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
