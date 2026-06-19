@@ -264,12 +264,18 @@ async function loadSettings() {
   $('#set-blocking').checked = !!s.blockingEnabled;
   $('#set-idle').value = String(s.idleThreshold || 120);
   $('#set-interval').value = String(s.pollInterval || 2);
+  $('#set-brk-devmode').checked = !!(s.breakReminder && s.breakReminder.devMode);
 }
 $('#set-tracking').addEventListener('change', async (e) => { await api.setTracking(e.target.checked); });
 $('#set-autolaunch').addEventListener('change', (e) => api.setSettings({ autoLaunch: e.target.checked }));
 $('#set-tray').addEventListener('change', (e) => api.setSettings({ minimizeToTray: e.target.checked }));
 $('#set-idle').addEventListener('change', (e) => api.setSettings({ idleThreshold: parseInt(e.target.value, 10) }));
 $('#set-interval').addEventListener('change', (e) => { api.setSettings({ pollInterval: parseInt(e.target.value, 10) }); toast('Restart to apply new interval'); });
+$('#set-brk-devmode').addEventListener('change', async (e) => {
+  await api.setSettings({ breakReminder: { devMode: e.target.checked } });
+  applyDevRows(e.target.checked); // keep the Breaks-page control in sync
+  toast(e.target.checked ? 'Dev mode on — breaks use seconds' : 'Dev mode off');
+});
 $('#set-reset').addEventListener('click', async () => { await api.resetSession(); toast('Session reset'); if (!$('#page-dashboard').classList.contains('hidden')) loadDashboard(); });
 
 // ---------- break reminder ----------
@@ -277,14 +283,17 @@ async function loadBreaks() {
   const s = await api.getSettings();
   brkSettings = Object.assign({
     enabled: false, checkIntervalMinutes: 60,
+    devMode: false, checkIntervalSeconds: 10,
     beepFrequency: 1000, beepDuration: 200, beepIntervalSeconds: 0.4
   }, s.breakReminder || {});
 
   $('#brk-enabled').checked = !!brkSettings.enabled;
   $('#brk-interval').value = brkSettings.checkIntervalMinutes;
+  $('#brk-interval-sec').value = brkSettings.checkIntervalSeconds;
   $('#brk-freq').value = brkSettings.beepFrequency;
   $('#brk-dur').value = brkSettings.beepDuration;
   $('#brk-beep-int').value = brkSettings.beepIntervalSeconds;
+  applyDevRows(!!brkSettings.devMode);
   updateBrkLabels();
   await updateBrkStatus();
 
@@ -301,13 +310,17 @@ async function updateBrkStatus() {
   }
   if (status.isBeeping) {
     $('#brk-status-title').textContent = '🔔 Ringing now!';
-    $('#brk-status-sub').textContent = 'Get up! Take a break — the alarm will stop when you leave the computer';
+    $('#brk-status-sub').textContent = 'Open the app and choose how to answer the alarm to silence it';
     return;
   }
   if (status.nextCheckAt) {
-    const mins = Math.max(0, Math.round((status.nextCheckAt - Date.now()) / 60000));
-    $('#brk-status-title').textContent = `Next reminder in ${mins}m`;
-    $('#brk-status-sub').textContent = 'Will only ring if you\'re at the computer during the check';
+    const remMs = status.nextCheckAt - Date.now();
+    const label = remMs < 60000
+      ? `${Math.max(0, Math.round(remMs / 1000))}s`
+      : `${Math.round(remMs / 60000)}m`;
+    const owe = status.owedExtraMinutes > 0 ? ` · you owe +${status.owedExtraMinutes}m of rest` : '';
+    $('#brk-status-title').textContent = `Next reminder in ${label}`;
+    $('#brk-status-sub').textContent = `Will only ring if you're at the computer during the check${owe}`;
   } else {
     $('#brk-status-title').textContent = 'Active';
     $('#brk-status-sub').textContent = 'Waiting for the next check cycle';
@@ -319,15 +332,24 @@ function updateBrkLabels() {
   $('#brk-interval-val').textContent = mins >= 60
     ? `${Math.floor(mins / 60)}h ${mins % 60 ? (mins % 60) + 'm' : ''}`.trim()
     : `${mins}m`;
+  $('#brk-interval-sec-val').textContent = `${$('#brk-interval-sec').value}s`;
   $('#brk-freq-val').textContent = `${$('#brk-freq').value} Hz`;
   $('#brk-dur-val').textContent = `${$('#brk-dur').value}ms`;
   $('#brk-beep-int-val').textContent = `${parseFloat($('#brk-beep-int').value).toFixed(1)}s`;
 }
 
+// Show the seconds-based "Break every" control when dev mode is on, minutes otherwise.
+function applyDevRows(dev) {
+  $('#brk-min-row').classList.toggle('hidden', dev);
+  $('#brk-sec-row').classList.toggle('hidden', !dev);
+}
+
 async function saveBrkSettings() {
+  // devMode is owned by the Settings page; omit it so the deep-merge preserves it
   brkSettings = {
     enabled: $('#brk-enabled').checked,
     checkIntervalMinutes: parseInt($('#brk-interval').value),
+    checkIntervalSeconds: parseInt($('#brk-interval-sec').value),
     beepFrequency: parseInt($('#brk-freq').value),
     beepDuration: parseInt($('#brk-dur').value),
     beepIntervalSeconds: parseFloat($('#brk-beep-int').value),
@@ -338,11 +360,37 @@ async function saveBrkSettings() {
 
 $('#brk-enabled').addEventListener('change', saveBrkSettings);
 $('#brk-test').addEventListener('click', () => api.testBreak());
-['brk-interval', 'brk-freq', 'brk-dur', 'brk-beep-int'].forEach((id) => {
+['brk-interval', 'brk-interval-sec', 'brk-freq', 'brk-dur', 'brk-beep-int'].forEach((id) => {
   const el = $(`#${id}`);
   el.addEventListener('input', updateBrkLabels);
   el.addEventListener('change', saveBrkSettings);
 });
+
+// ---------- break alarm prompt ----------
+function showBreakModal(d) {
+  d = d || {};
+  const rec = d.recommendedBreakMinutes || 5;
+  $('#brk-modal-sub').textContent =
+    `You've been at the computer for a while. Step away for about ${rec} minutes and rest your eyes.`;
+  const note = $('#brk-modal-note');
+  if (d.owedExtraMinutes > 0) {
+    note.textContent = `⚠️ You skipped a break earlier — you now owe an extra ${d.owedExtraMinutes} minutes of rest.`;
+    note.classList.remove('hidden');
+  } else {
+    note.classList.add('hidden');
+  }
+  $('#break-modal').classList.remove('hidden');
+}
+
+function hideBreakModal() { $('#break-modal').classList.add('hidden'); }
+
+$$('#break-modal .modal-btn').forEach((b) => b.addEventListener('click', async () => {
+  hideBreakModal();
+  await api.respondBreak(b.dataset.choice);
+  if ($('#page-breaks') && !$('#page-breaks').classList.contains('hidden')) updateBrkStatus();
+}));
+
+api.onBreakPrompt((d) => showBreakModal(d));
 
 // ---------- live updates ----------
 api.onTick((p) => {

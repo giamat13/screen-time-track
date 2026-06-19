@@ -85,6 +85,10 @@ function createWindow() {
     }
   });
 
+  // When the user enters the app, surface a pending break alarm as the prompt.
+  win.on('focus', presentBreakPromptIfRinging);
+  win.on('show', presentBreakPromptIfRinging);
+
   if (isDev) win.webContents.openDevTools({ mode: 'detach' });
 }
 
@@ -93,6 +97,16 @@ function showWindow() {
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
+}
+
+// If a break alarm is ringing, show the in-app prompt — but only once the user is
+// actually looking at the app (window visible & focused). The beep alone fires in
+// the background; the popup waits until you "enter" the app.
+function presentBreakPromptIfRinging() {
+  if (!breakReminder || !win || win.isDestroyed()) return;
+  if (!win.isVisible() || !win.isFocused()) return;
+  const st = breakReminder.getStatus();
+  if (st.isBeeping) win.webContents.send('break-prompt', st);
 }
 
 // ---- tray -----------------------------------------------------------------
@@ -142,7 +156,15 @@ function isPaused() {
 }
 
 function startBreakReminder() {
-  breakReminder = new BreakReminder({ getSettings: () => store.getSettings(), powerMonitor });
+  breakReminder = new BreakReminder({
+    getSettings: () => store.getSettings(),
+    powerMonitor,
+    onPrompt: () => {
+      // Don't steal focus — just beep. If the user already happens to be in the
+      // app, show the prompt now; otherwise it appears when they next focus it.
+      presentBreakPromptIfRinging();
+    },
+  });
   breakReminder.start();
 }
 
@@ -254,6 +276,7 @@ function setupIpc() {
 
   ipcMain.handle('breaks:testBeep', () => { if (breakReminder) breakReminder.testBeep(); });
   ipcMain.handle('breaks:getStatus', () => breakReminder ? breakReminder.getStatus() : { isBeeping: false, nextCheckAt: null });
+  ipcMain.handle('breaks:respond', (_e, choice) => breakReminder ? breakReminder.respond(choice) : { isBeeping: false, nextCheckAt: null });
   ipcMain.handle('tracking:set', (_e, on) => { setTracking(on); return store.getSettings().tracking; });
   ipcMain.handle('tracking:toggle', () => { setTracking(!store.getSettings().tracking); return store.getSettings().tracking; });
   ipcMain.handle('session:reset', () => { tracker.resetSession(); return tracker.getStatus(); });

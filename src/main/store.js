@@ -22,6 +22,8 @@ function defaults() {
       breakReminder: {
         enabled: false,
         checkIntervalMinutes: 60,
+        devMode: false,             // use a seconds-based interval for quick testing
+        checkIntervalSeconds: 10,   // interval used when devMode is on
         beepFrequency: 1000,
         beepDuration: 200,
         beepIntervalSeconds: 0.4,
@@ -120,7 +122,13 @@ function dayTotal(offset = 0) {
 
 function getSettings() { return data.settings; }
 function setSettings(partial) {
-  data.settings = Object.assign({}, data.settings, partial || {});
+  partial = partial || {};
+  const next = Object.assign({}, data.settings, partial);
+  // breakReminder is nested — merge it so partial updates don't drop other keys
+  if (partial.breakReminder) {
+    next.breakReminder = Object.assign({}, data.settings.breakReminder, partial.breakReminder);
+  }
+  data.settings = next;
   flush();
   return data.settings;
 }

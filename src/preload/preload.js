@@ -14,8 +14,10 @@ contextBridge.exposeInMainWorld('api', {
 
   testBreak: () => ipcRenderer.invoke('breaks:testBeep'),
   getBreakStatus: () => ipcRenderer.invoke('breaks:getStatus'),
+  respondBreak: (choice) => ipcRenderer.invoke('breaks:respond', choice),
 
   onTick: (cb) => ipcRenderer.on('tick', (_e, d) => cb(d)),
   onTrackingChanged: (cb) => ipcRenderer.on('tracking-changed', (_e, d) => cb(d)),
+  onBreakPrompt: (cb) => ipcRenderer.on('break-prompt', (_e, d) => cb(d)),
   onNavigate: (cb) => ipcRenderer.on('navigate', (_e, d) => cb(d))
 });
