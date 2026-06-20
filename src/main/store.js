@@ -216,10 +216,10 @@ function checkGoalsMet(key) {
   return true;
 }
 
-// Streaks start with 5 freezers and earn another every 4 met days. When a day is
+// Streaks start with 5 freezers and earn another every 3 met days. When a day is
 // missed, a freezer is spent to keep the streak alive (the streak drops by one
 // instead of resetting).
-const FREEZER_EVERY = 4;
+const FREEZER_EVERY = 3;
 const STARTING_FREEZERS = 5;
 
 function syncStreaks() {

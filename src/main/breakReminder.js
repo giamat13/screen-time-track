@@ -7,6 +7,7 @@ const BREAK_BASE_MIN = 5;          // suggested break length with no penalty
 const BREAK_PENALTY_STEP_MIN = 5;  // extra suggested break minutes added per skipped break
 const BREAK_MIN_MS = 5 * 60 * 1000;   // minimum time before next timer starts after "break"
 const BREAK_MIN_DEV_MS = 15 * 1000;   // same, in dev mode
+const AWAY_RESET_MS = 5 * 60 * 1000;  // away this long → the presence timer resets to full
 
 class BreakReminder {
   constructor({ getSettings, powerMonitor, onPrompt }) {
@@ -18,7 +19,8 @@ class BreakReminder {
     this._beepProc = null;
     this._isBeeping = false;
     this._nextCheckAt = null;
-    this._activeStartedAt = null; // when the current continuous-presence streak began
+    this._remainingMs = null;     // ms left on the presence timer (null = not started yet)
+    this._lastTickAt = null;      // timestamp of the previous tick, for measuring elapsed time
     this._awayAt = null;          // when the user went idle (estimated)
     this._skipCount = 0;          // consecutive "no energy" skips since the last real break
     this._owedExtraMin = 0;       // extra break minutes owed because of skips
@@ -35,7 +37,8 @@ class BreakReminder {
     this._killBeepProc();
     this._isBeeping = false;
     this._nextCheckAt = null;
-    this._activeStartedAt = null;
+    this._remainingMs = null;
+    this._lastTickAt = null;
     this._awayAt = null;
     this._breakEndAt = null;
     // penalty state (skipCount / owedExtraMin) is intentionally preserved across
@@ -87,9 +90,10 @@ class BreakReminder {
 
   _startTracking() {
     const s = this._getSettings().breakReminder || {};
-    if (!s.enabled) { this._nextCheckAt = null; this._activeStartedAt = null; return; }
+    if (!s.enabled) { this._nextCheckAt = null; this._remainingMs = null; return; }
     if (this._tickTimer) return;
-    this._activeStartedAt = null;
+    this._remainingMs = null;
+    this._lastTickAt = null;
     this._tickTimer = setInterval(() => this._onTick(), 1000);
   }
 
@@ -108,56 +112,67 @@ class BreakReminder {
     return Math.max(floor, Math.round(this._baseIntervalMs() / Math.pow(2, n)));
   }
 
+  // The timer model, in three rules:
+  //   1. While you're at the computer, the timer counts down.
+  //   2. The moment you leave, it pauses (frozen at whatever was left).
+  //   3. If you're away 5+ minutes, it resets to full for when you return.
+  // When the timer hits 0 the alarm fires (unchanged).
   _onTick() {
     if (this._isBeeping) return; // guard timer is in charge while beeping
     const settings = this._getSettings();
     const s = settings.breakReminder || {};
-    if (!s.enabled) { this._nextCheckAt = null; this._activeStartedAt = null; this._awayAt = null; return; }
+    if (!s.enabled) {
+      this._nextCheckAt = null; this._remainingMs = null;
+      this._lastTickAt = null; this._awayAt = null;
+      return;
+    }
 
     const idleThreshold = settings.idleThreshold || 120;
     const idleSecs = this._pm.getSystemIdleTime();
     const now = Date.now();
+    const elapsed = this._lastTickAt === null ? 0 : now - this._lastTickAt;
+    this._lastTickAt = now;
 
     if (idleSecs >= idleThreshold) {
-      // away — record when they left (estimated from idleSecs)
+      // Rule 2: away — pause the timer.
       if (this._awayAt === null) {
+        // First tick we notice the absence. Back-date it to when they actually
+        // left and refund the countdown that ran during the idle grace period,
+        // so the pause is accurate to the moment they walked away.
         this._awayAt = now - idleSecs * 1000;
+        if (this._remainingMs !== null) {
+          this._remainingMs = Math.min(this._effectiveIntervalMs(), this._remainingMs + idleSecs * 1000);
+          this._nextCheckAt = now + this._remainingMs;
+        }
       }
-      // after 10 minutes away, treat it as a real break: reset the streak and clear any debt
-      if ((now - this._awayAt) / 1000 >= 600 && this._activeStartedAt !== null) {
-        this._activeStartedAt = null;
+      // Rule 3: away long enough → reset to full for when they return.
+      if (now - this._awayAt >= AWAY_RESET_MS) {
+        this._remainingMs = null;
         this._nextCheckAt = null;
         this._skipCount = 0;
         this._owedExtraMin = 0;
       }
-      // freeze — don't advance the timer while away
-      return;
+      return; // frozen while away
     }
 
     // present at the computer
+    this._awayAt = null;
 
-    // After clicking "taking a break", enforce a minimum break window before resuming
+    // After clicking "taking a break", enforce a minimum break window before resuming.
     if (this._breakEndAt !== null) {
-      if (now < this._breakEndAt) {
-        this._activeStartedAt = null;
-        this._awayAt = null;
-        return;
-      }
+      if (now < this._breakEndAt) { this._remainingMs = null; return; }
       this._breakEndAt = null; // minimum time elapsed — allow timer to start
     }
 
-    if (this._activeStartedAt === null) {
-      // fresh start (first run or returned after 10+ min away)
-      this._activeStartedAt = now;
-    } else if (this._awayAt !== null) {
-      // returning from a short absence — shift start forward so absence isn't counted
-      this._activeStartedAt += now - this._awayAt;
+    // Rule 1: count down while present.
+    if (this._remainingMs === null) {
+      this._remainingMs = this._effectiveIntervalMs(); // fresh start / after a reset
+    } else {
+      this._remainingMs -= elapsed;
     }
-    this._awayAt = null;
 
-    const targetMs = this._effectiveIntervalMs();
-    this._nextCheckAt = this._activeStartedAt + targetMs;
-    if (now - this._activeStartedAt >= targetMs) {
+    this._nextCheckAt = now + Math.max(0, this._remainingMs);
+    if (this._remainingMs <= 0) {
       this._startBeeping();
     }
   }
@@ -203,9 +218,10 @@ class BreakReminder {
     if (this._guardTimer) { clearInterval(this._guardTimer); this._guardTimer = null; }
     this._killBeepProc();
     this._isBeeping = false;
-    // restart the continuous-presence streak from scratch; the next interval is
-    // shortened automatically if skipCount > 0 (see _effectiveIntervalMin).
-    this._activeStartedAt = null;
+    // restart the presence timer from scratch; the next interval is shortened
+    // automatically if skipCount > 0 (see _effectiveIntervalMs).
+    this._remainingMs = null;
+    this._lastTickAt = null;
     this._nextCheckAt = null;
   }
 
