@@ -206,7 +206,7 @@ class Tracker {
 
     let counted = false;
     if (appName && !paused && !isIdle && delta > 0) {
-      this.store.addTime(appName, delta);
+      this.store.addTime(appName, delta, !!settings.studyMode);
       this.session.appSecs[appName] = (this.session.appSecs[appName] || 0) + delta;
       this.session.seconds += delta;
       counted = true;

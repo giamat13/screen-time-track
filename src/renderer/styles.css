@@ -142,6 +142,7 @@ h3 { font-size: 15px; margin: 0; font-weight: 600; }
 @keyframes pulse { 0%,100% { opacity:1; box-shadow: 0 0 0 0 rgba(255,255,255,.4); } 50% { opacity:.7; box-shadow: 0 0 0 4px rgba(255,255,255,0); } }
 .hero-pause { background: rgba(255,255,255,.18); border: none; color: #fff; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; }
 .hero-pause:hover { background: rgba(255,255,255,.28); }
+#hero-study.active { background: #38bdf8; color: #042027; font-weight: 600; }
 .hero-label { color: rgba(255,255,255,.85); margin: 18px 0 6px; font-size: 14px; }
 .hero-time { font-size: 46px; font-weight: 700; color: #fff; line-height: 1; }
 .hero-time small { font-size: 20px; font-weight: 500; opacity: .8; margin: 0 8px 0 2px; }
@@ -271,6 +272,7 @@ input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 3
 .streak-dot { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--border); background: var(--card-2); }
 .streak-dot.met { background: rgba(52,211,153,.2); border-color: var(--green); }
 .streak-dot.unmet { background: rgba(239,68,68,.1); border-color: rgba(239,68,68,.35); }
+.streak-dot.frozen { background: rgba(56,189,248,.18); border-color: #38bdf8; display: flex; align-items: center; justify-content: center; font-size: 14px; }
 .sd-day { font-size: 10px; color: var(--muted-2); }
 
 .weekly-bars { display: flex; align-items: flex-end; gap: 10px; height: 110px; margin-bottom: 18px; padding-top: 8px; }
@@ -312,3 +314,38 @@ input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 3
 .modal-btn.danger { color: var(--amber); }
 .modal-btn.danger:hover { border-color: var(--amber); }
 .modal-fineprint { color: var(--muted-2); font-size: 11.5px; line-height: 1.5; margin: 16px 0 0; }
+
+/* ---------- date navigation ---------- */
+.date-nav { display: flex; align-items: center; gap: 6px; margin-right: 6px; padding-right: 8px; border-right: 1px solid var(--border); }
+.date-nav-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); width: 26px; height: 26px; border-radius: 7px; cursor: pointer; font-size: 15px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.date-nav-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.date-nav-btn:disabled { opacity: .35; cursor: default; }
+.date-nav-label { font-size: 12px; color: var(--muted); min-width: 92px; text-align: center; white-space: nowrap; }
+
+/* ---------- badge variants ---------- */
+.badge.good { background: rgba(52,211,153,.12); color: var(--green); border-color: rgba(52,211,153,.25); }
+.badge.bad { background: rgba(244,114,182,.12); color: var(--pink); border-color: rgba(244,114,182,.25); }
+
+/* ---------- peak hours ---------- */
+.hour-bars { display: flex; align-items: flex-end; gap: 3px; height: 140px; padding-top: 6px; }
+.hour-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; }
+.hour-col .hfill { width: 78%; background: linear-gradient(180deg, #57b0ff, #2e9bff); border-radius: 4px 4px 0 0; min-height: 2px; transition: height .3s, opacity .2s; }
+.hour-col.peak .hfill { background: linear-gradient(180deg, #fbbf6b, #f5a623); }
+.hour-col.dim .hfill { opacity: .25; }
+.hour-col .hlabel { font-size: 10px; color: var(--muted-2); }
+.hour-scrub { margin-top: 12px; }
+.hour-scrub input[type=range] { width: 100%; }
+.hour-scrub-readout { display: flex; justify-content: space-between; margin-top: 6px; gap: 10px; flex-wrap: wrap; }
+.hour-scrub-readout strong { color: var(--text); }
+
+/* ---------- day of week ---------- */
+.dow-bars { display: flex; align-items: flex-end; gap: 8px; height: 150px; padding-top: 8px; }
+.dow-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end; }
+.dow-col .dfill { width: 70%; background: linear-gradient(180deg, #8aa0b6, #5f6776); border-radius: 5px 5px 0 0; min-height: 2px; transition: height .3s; }
+.dow-col.low .dfill { background: linear-gradient(180deg, #6ee7b7, #34d399); }
+.dow-col.high .dfill { background: linear-gradient(180deg, #f9a8d4, #f472b6); }
+.dow-col .dlabel { font-size: 11px; color: var(--muted); }
+.dow-col .dval { font-size: 10px; color: var(--muted-2); }
+.dow-summary { margin-top: 12px; }
+.dow-tag { font-size: 13px; color: var(--muted); }
+.dow-tag strong { color: var(--green); }

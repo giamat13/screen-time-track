@@ -1,8 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
-  getDashboard: (range) => ipcRenderer.invoke('dashboard:get', range),
-  getStats: (range) => ipcRenderer.invoke('stats:get', range),
+  getDashboard: (range, offset, filter) => ipcRenderer.invoke('dashboard:get', range, offset, filter),
+  getStats: (range, offset, filter) => ipcRenderer.invoke('stats:get', range, offset, filter),
   getState: () => ipcRenderer.invoke('state:get'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (partial) => ipcRenderer.invoke('settings:set', partial),
@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('api', {
 
   getGoals: () => ipcRenderer.invoke('goals:get'),
   setGoal: (appName, targetSec) => ipcRenderer.invoke('goals:set', appName, targetSec),
+  getGlobalLimit: () => ipcRenderer.invoke('limit:getGlobal'),
+  setGlobalLimit: (seconds) => ipcRenderer.invoke('limit:setGlobal', seconds),
   getStreaks: () => ipcRenderer.invoke('streaks:get'),
   getWeeklyReport: () => ipcRenderer.invoke('weekly:get'),
 

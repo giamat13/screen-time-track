@@ -1,13 +1,23 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, powerMonitor, nativeImage, Notification } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
+
+const isDev = process.argv.includes('--dev');
+const startHidden = process.argv.includes('--hidden');
+
+// Dev runs against a separate userData dir so it has its own single-instance
+// lock and data file — that way F5 always launches the dev source independently
+// of an installed "Screen Time" build (which otherwise holds the lock and makes
+// the dev instance quit and refocus the installed app). Must run before any
+// module (store.js) binds a path under userData, and before the lock request.
+if (isDev) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'screen-time-track-dev'));
+}
+
 const store = require('./store');
 const { Tracker } = require('./tracker');
 const browserBridge = require('./browserBridge');
 const { BreakReminder } = require('./breakReminder');
-
-const isDev = process.argv.includes('--dev');
-const startHidden = process.argv.includes('--hidden');
 
 let win = null;
 let tray = null;
@@ -206,14 +216,27 @@ function applyAutoLaunch(enabled) {
 // ---- dashboard / stats computation ---------------------------------------
 const RANGE_DAYS = { Today: 1, '7': 7, '14': 14, '30': 30 };
 
-function computeDashboard(range) {
+function computeDashboard(range, offset = 0, filter = 'all') {
   const days = RANGE_DAYS[range] || 1;
-  const agg = store.rangeData(days);
+  // offset is measured in whole windows; back one window = `days` days earlier.
+  const endOffset = Math.max(0, offset) * days;
+  const agg = store.rangeData(days, endOffset);
+  const studyApps = agg.studyApps || {};
+  // filter: 'all' = everything, 'play' = exclude study time, 'study' = only study time
+  const appSec = (name, sec) => {
+    if (filter === 'play') return sec - (studyApps[name] || 0);
+    if (filter === 'study') return studyApps[name] || 0;
+    return sec;
+  };
   const apps = Object.entries(agg.apps)
-    .map(([name, sec]) => ({ name, sec: Math.round(sec) }))
+    .map(([name, sec]) => ({ name, sec: Math.round(appSec(name, sec)) }))
+    .filter((a) => a.sec > 0)
     .sort((a, b) => b.sec - a.sec);
 
-  const total = Math.round(agg.total);
+  const studyTotal = Math.round(agg.study || 0);
+  const total = filter === 'play' ? Math.round(agg.total) - studyTotal
+    : filter === 'study' ? studyTotal
+    : Math.round(agg.total);
   const top = apps[0] || null;
   const denom = days === 1 ? 1 : Math.max(agg.daysWithData, 1);
   const dailyAvg = Math.round(total / denom);
@@ -234,6 +257,11 @@ function computeDashboard(range) {
   return {
     range,
     days,
+    filter,
+    studyTotal,
+    offset: Math.max(0, offset),
+    rangeStart: agg.perDay.length ? agg.perDay[0].date : null,
+    rangeEnd: agg.perDay.length ? agg.perDay[agg.perDay.length - 1].date : null,
     total,
     appsUsed: apps.length,
     mostUsed: top ? top.name : '—',
@@ -243,14 +271,17 @@ function computeDashboard(range) {
     distribution: dist,
     topApplications: apps.slice(0, 8),
     perDay: agg.perDay,
+    hours: agg.hours,
+    dayOfWeek: store.dayOfWeekStats(30),
+    trendAnalysis: store.trendAnalysis(),
     trend: { today: todayTotal, yesterday: yesterdayTotal, pct: trendPct }
   };
 }
 
 // ---- IPC ------------------------------------------------------------------
 function setupIpc() {
-  ipcMain.handle('dashboard:get', (_e, range) => computeDashboard(range));
-  ipcMain.handle('stats:get', (_e, range) => computeDashboard(range)); // same payload, richer use in UI
+  ipcMain.handle('dashboard:get', (_e, range, offset, filter) => computeDashboard(range, offset, filter));
+  ipcMain.handle('stats:get', (_e, range, offset, filter) => computeDashboard(range, offset, filter)); // same payload, richer use in UI
   ipcMain.handle('state:get', () => ({
     tracking: store.getSettings().tracking,
     paused: isPaused(),
@@ -280,6 +311,8 @@ function setupIpc() {
 
   ipcMain.handle('goals:get', () => store.getGoals());
   ipcMain.handle('goals:set', (_e, appName, targetSec) => store.setGoal(appName, targetSec));
+  ipcMain.handle('limit:getGlobal', () => store.getGlobalLimit());
+  ipcMain.handle('limit:setGlobal', (_e, seconds) => store.setGlobalLimit(seconds));
   ipcMain.handle('streaks:get', () => store.getStreaks());
   ipcMain.handle('weekly:get', () => store.weeklyReport());
   ipcMain.handle('tracking:set', (_e, on) => { setTracking(on); return store.getSettings().tracking; });

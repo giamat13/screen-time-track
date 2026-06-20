@@ -10,7 +10,12 @@ const $$ = (s) => Array.from(document.querySelectorAll(s));
 const DONUT_COLORS = ['#2e9bff', '#a78bfa', '#34d399', '#f5a623', '#475569'];
 let dashRange = 'Today';
 let statsRange = '7';
+let dashOffset = 0;
+let statsOffset = 0;
+let lastHours = new Array(24).fill(0);
 let trackingOn = true;
+let studyOn = false;
+let dashFilter = 'all';
 let lastIdleSeconds = 0;
 let brkSettings = {};
 let brkStatusInterval = null;
@@ -78,24 +83,74 @@ $$('.range-tabs').forEach((group) => {
     tab.addEventListener('click', () => {
       group.querySelectorAll('.range-tab').forEach((t) => t.classList.remove('active'));
       tab.classList.add('active');
-      if (scope === 'dashboard') { dashRange = tab.dataset.range; loadDashboard(); }
-      else { statsRange = tab.dataset.range; loadStats(); }
+      if (scope === 'dashboard') { dashRange = tab.dataset.range; dashOffset = 0; loadDashboard(); }
+      else { statsRange = tab.dataset.range; statsOffset = 0; loadStats(); }
     });
   });
 });
+
+// date navigation (‹ / ›) — shift the viewed window back/forward by one range
+$$('.date-nav').forEach((nav) => {
+  const scope = nav.dataset.scope;
+  nav.querySelectorAll('.date-nav-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const delta = btn.dataset.dir === 'prev' ? 1 : -1;
+      if (scope === 'dashboard') { dashOffset = Math.max(0, dashOffset + delta); loadDashboard(); }
+      else { statsOffset = Math.max(0, statsOffset + delta); loadStats(); }
+    });
+  });
+});
+
+function fmtRangeLabel(range, offset, d) {
+  if (offset === 0) return range === 'Today' ? 'Today' : (range === '7' ? 'This week' : `Last ${range} days`);
+  if (range === 'Today') {
+    return offset === 1 ? 'Yesterday' : new Date((d.rangeStart || '') + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  }
+  const fmtDay = (s) => s ? new Date(s + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '?';
+  return `${fmtDay(d.rangeStart)} – ${fmtDay(d.rangeEnd)}`;
+}
+
+function applyNavState(scope, offset, range, d) {
+  const nav = document.querySelector(`.date-nav[data-scope="${scope}"]`);
+  if (!nav) return;
+  nav.querySelector('[data-dir="next"]').disabled = offset === 0;
+  const label = nav.querySelector('.date-nav-label');
+  if (label) label.textContent = fmtRangeLabel(range, offset, d);
+}
 $('#refresh-btn').addEventListener('click', () => loadDashboard());
 $('#hero-pause').addEventListener('click', async () => {
   const tracking = await api.toggleTracking();
   applyTrackingUI(tracking);
 });
 
+function applyStudyUI(on) {
+  studyOn = !!on;
+  const btn = $('#hero-study');
+  if (btn) btn.classList.toggle('active', studyOn);
+  const cb = $('#set-studymode');
+  if (cb) cb.checked = studyOn;
+}
+
+async function toggleStudyMode(on) {
+  await api.setSettings({ studyMode: on });
+  applyStudyUI(on);
+  toast(on ? '📚 Study Mode on — time tracked but not counted against limits' : 'Study Mode off');
+  if (!$('#page-dashboard').classList.contains('hidden')) loadDashboard();
+}
+
+$('#hero-study').addEventListener('click', () => toggleStudyMode(!studyOn));
+
+$('#dash-filter').addEventListener('change', (e) => { dashFilter = e.target.value; loadDashboard(); });
+
 // ---------- dashboard ----------
 async function loadDashboard() {
-  const d = await api.getDashboard(dashRange);
+  const d = await api.getDashboard(dashRange, dashOffset, dashFilter);
   $('#greeting').textContent = timeOfDay();
   $('#today-date').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  applyNavState('dashboard', dashOffset, dashRange, d);
 
-  $('#hero-label').textContent = dashRange === 'Today' ? "Today's Screen Time" : `Screen Time (${labelFor(dashRange)})`;
+  const viewing = dashOffset === 0 ? '' : ` · ${fmtRangeLabel(dashRange, dashOffset, d)}`;
+  $('#hero-label').textContent = (dashRange === 'Today' ? "Today's Screen Time" : `Screen Time (${labelFor(dashRange)})`) + viewing;
   $('#hero-time').innerHTML = fmtLong(d.total);
 
   $('#s-apps').textContent = d.appsUsed;
@@ -218,7 +273,11 @@ function applyTrackingUI(tracking, idle, idleSecs) {
 
 // ---------- statistics ----------
 async function loadStats() {
-  const d = await api.getStats(statsRange);
+  const d = await api.getStats(statsRange, statsOffset);
+  applyNavState('stats', statsOffset, statsRange, d);
+  renderPeakHours(d.hours || []);
+  renderDayOfWeek(d.dayOfWeek);
+  renderStatTrend(d.trendAnalysis);
   $('#st-total').textContent = fmtShort(d.total);
   $('#st-avg').textContent = fmtShort(d.dailyAvg);
   $('#st-apps').textContent = d.appsUsed;
@@ -256,10 +315,86 @@ async function loadStats() {
   });
 }
 
+// peak hours: 24 bars + a scrubber that shows cumulative usage up to a chosen hour
+function renderPeakHours(hours) {
+  lastHours = Array.isArray(hours) && hours.length === 24 ? hours : new Array(24).fill(0);
+  const bars = $('#hour-bars');
+  bars.innerHTML = '';
+  const max = Math.max(...lastHours, 1);
+  const peakIdx = lastHours.indexOf(Math.max(...lastHours));
+  const total = lastHours.reduce((s, x) => s + x, 0);
+  $('#peak-hour-badge').textContent = total > 0
+    ? `Busiest ${String(peakIdx).padStart(2, '0')}:00`
+    : 'No data yet';
+
+  lastHours.forEach((sec, h) => {
+    const col = document.createElement('div');
+    col.className = 'hour-col' + (h === peakIdx && total > 0 ? ' peak' : '');
+    const ht = Math.round((sec / max) * 100);
+    col.title = `${String(h).padStart(2, '0')}:00 — ${fmt(sec)}`;
+    col.innerHTML = `<div class="hfill" style="height:${ht}%"></div>` +
+      (h % 3 === 0 ? `<div class="hlabel">${h}</div>` : `<div class="hlabel">&nbsp;</div>`);
+    bars.appendChild(col);
+  });
+  updateHourScrub();
+}
+
+function updateHourScrub() {
+  const hr = parseInt($('#hour-scrub').value, 10);
+  $('#hour-scrub-time').textContent = `${String(hr).padStart(2, '0')}:00`;
+  const cum = lastHours.slice(0, hr + 1).reduce((s, x) => s + x, 0);
+  const total = lastHours.reduce((s, x) => s + x, 0) || 1;
+  $('#hour-scrub-total').textContent = fmt(cum);
+  $('#hour-scrub-pct').textContent = Math.round((cum / total) * 100) + '%';
+  // highlight bars up to the scrubbed hour
+  $$('#hour-bars .hour-col').forEach((col, i) => col.classList.toggle('dim', i > hr));
+}
+$('#hour-scrub').addEventListener('input', updateHourScrub);
+
+const DOW_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function renderDayOfWeek(dow) {
+  const bars = $('#dow-bars');
+  bars.innerHTML = '';
+  if (!dow || !dow.week) return;
+  const max = Math.max(...dow.week.map((w) => w.avg), 1);
+  dow.week.forEach((w) => {
+    const col = document.createElement('div');
+    const isLow = dow.lowest && w.dow === dow.lowest.dow && w.avg > 0;
+    const isHigh = dow.highest && w.dow === dow.highest.dow && w.avg > 0;
+    col.className = 'dow-col' + (isLow ? ' low' : '') + (isHigh ? ' high' : '');
+    const h = Math.round((w.avg / max) * 100);
+    col.innerHTML = `<div class="dval">${w.avg > 0 ? fmtShort(w.avg) : ''}</div>
+      <div class="dfill" style="height:${h}%"></div>
+      <div class="dlabel">${DOW_NAMES[w.dow].slice(0, 2)}</div>`;
+    bars.appendChild(col);
+  });
+  const sum = $('#dow-summary');
+  if (dow.lowest) {
+    sum.innerHTML = `<span class="dow-tag low">🏆 Least screen: <strong>${DOW_NAMES[dow.lowest.dow]}</strong> (${fmtShort(dow.lowest.avg)}/day avg)</span>`;
+  } else {
+    sum.innerHTML = '<span class="subtle small">Not enough data yet</span>';
+  }
+}
+
+function renderStatTrend(t) {
+  if (!t) return;
+  $('#stat-trend-recent').textContent = fmtShort(t.recentAvg);
+  $('#stat-trend-prior').textContent = fmtShort(t.priorAvg);
+  const badge = $('#stat-trend-badge');
+  const arrow = t.direction === 'up' ? '↑' : t.direction === 'down' ? '↓' : '→';
+  badge.textContent = `${arrow} ${Math.abs(t.pct)}%`;
+  badge.className = 'badge ' + (t.direction === 'up' ? 'bad' : t.direction === 'down' ? 'good' : '');
+  const note = $('#stat-trend-note');
+  if (t.direction === 'up') note.textContent = `Usage trending up ${Math.abs(t.pct)}% vs the previous week.`;
+  else if (t.direction === 'down') note.textContent = `Nice — usage trending down ${Math.abs(t.pct)}% vs the previous week.`;
+  else note.textContent = 'Usage is holding steady week over week.';
+}
+
 // ---------- settings ----------
 async function loadSettings() {
   const s = await api.getSettings();
   $('#set-tracking').checked = !!s.tracking;
+  applyStudyUI(!!s.studyMode);
   $('#set-autolaunch').checked = !!s.autoLaunch;
   $('#set-tray').checked = !!s.minimizeToTray;
   $('#set-blocking').checked = !!s.blockingEnabled;
@@ -268,6 +403,7 @@ async function loadSettings() {
   $('#set-brk-devmode').checked = !!(s.breakReminder && s.breakReminder.devMode);
 }
 $('#set-tracking').addEventListener('change', async (e) => { await api.setTracking(e.target.checked); });
+$('#set-studymode').addEventListener('change', (e) => toggleStudyMode(e.target.checked));
 $('#set-autolaunch').addEventListener('change', (e) => api.setSettings({ autoLaunch: e.target.checked }));
 $('#set-tray').addEventListener('change', (e) => api.setSettings({ minimizeToTray: e.target.checked }));
 $('#set-idle').addEventListener('change', (e) => api.setSettings({ idleThreshold: parseInt(e.target.value, 10) }));
@@ -395,6 +531,7 @@ api.onBreakPrompt((d) => showBreakModal(d));
 
 // ---------- goals & streaks ----------
 let goalsData = {};
+let globalLimit = 0; // total daily cap (seconds), 0 = off
 
 function rendDateKey(d) {
   const y = d.getFullYear();
@@ -404,22 +541,39 @@ function rendDateKey(d) {
 }
 
 async function loadGoals() {
-  const [goals, streaks, weekly, dash] = await Promise.all([
+  const [goals, streaks, weekly, dash, gLimit] = await Promise.all([
     api.getGoals(),
     api.getStreaks(),
     api.getWeeklyReport(),
-    api.getDashboard('Today')
+    api.getDashboard('Today'),
+    api.getGlobalLimit()
   ]);
   goalsData = goals;
+  globalLimit = gLimit || 0;
+  renderGlobalLimit(dash);
   renderStreak(streaks);
   renderWeeklyReport(weekly);
   renderGoalsList(goals, dash);
 }
 
+function renderGlobalLimit(dash) {
+  const on = globalLimit > 0;
+  const mins = on ? Math.round(globalLimit / 60) : 120;
+  $('#global-limit-on').checked = on;
+  const pick = $('#global-limit-pick');
+  pick.value = mins;
+  pick.disabled = !on;
+  $('#global-limit-val').textContent = fmtShort(mins * 60);
+  const used = dash ? ((dash.total || 0) - (dash.studyTotal || 0)) : 0; // study excluded from the limit
+  $('#global-limit-status').textContent = on ? `Today: ${fmt(used)} / ${fmtShort(globalLimit)}` : 'Off';
+}
+
 function renderStreak(streaks) {
-  const { current, best, metDays } = streaks;
+  const { current, best, metDays, freezers = 0, frozenDays = {} } = streaks;
   $('#streak-current').textContent = current;
   $('#streak-best').textContent = best;
+  $('#streak-freezers').textContent = freezers;
+  $('#streak-freezer-hint').textContent = `(earn 1 every 4 days — saves a broken streak)`;
   const flame = $('#flame-icon');
   if (current === 0) flame.classList.add('cold'); else flame.classList.remove('cold');
   const msgs = ['Start a streak by meeting your goals today!', 'Great start — keep it going!', 'On a roll!', 'Impressive consistency!', 'Unstoppable!'];
@@ -428,17 +582,20 @@ function renderStreak(streaks) {
   const cal = $('#streak-calendar');
   cal.innerHTML = '';
   const DAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-  const hasGoals = Object.keys(goalsData).length > 0;
+  const hasGoals = Object.keys(goalsData).length > 0 || globalLimit > 0;
   for (let i = 6; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
     const key = rendDateKey(d);
     const dayLbl = DAY_NAMES[d.getDay()];
     const met = metDays && metDays[key];
-    const cls = !hasGoals ? '' : (met === true ? 'met' : (met === false ? 'unmet' : ''));
+    const isFrozen = frozenDays && frozenDays[key];
+    let cls = '';
+    if (hasGoals) cls = isFrozen ? 'frozen' : (met === true ? 'met' : (met === false ? 'unmet' : ''));
+    const title = isFrozen ? `${key} — saved by a freezer ❄️` : key;
     const wrap = document.createElement('div');
     wrap.className = 'streak-dot-wrap';
-    wrap.innerHTML = `<div class="streak-dot ${cls}" title="${key}"></div><div class="sd-day">${dayLbl}</div>`;
+    wrap.innerHTML = `<div class="streak-dot ${cls}" title="${title}">${isFrozen ? '❄️' : ''}</div><div class="sd-day">${dayLbl}</div>`;
     cal.appendChild(wrap);
   }
 }
@@ -551,6 +708,30 @@ $('#goals-add-btn').addEventListener('click', async () => {
 
 $('#goals-cancel-btn').addEventListener('click', () => $('#goals-add-form').classList.add('hidden'));
 
+// ---- global (all-apps) daily limit ----
+async function saveGlobalLimit() {
+  const on = $('#global-limit-on').checked;
+  const mins = parseInt($('#global-limit-pick').value);
+  globalLimit = on ? mins * 60 : 0;
+  await api.setGlobalLimit(globalLimit);
+  const [streaks, dash] = await Promise.all([api.getStreaks(), api.getDashboard('Today')]);
+  renderGlobalLimit(dash);
+  renderStreak(streaks);
+  toast(on ? `Total limit: up to ${fmtShort(globalLimit)}/day` : 'Total limit removed');
+}
+
+$('#global-limit-on').addEventListener('change', () => {
+  $('#global-limit-pick').disabled = !$('#global-limit-on').checked;
+  saveGlobalLimit();
+});
+
+$('#global-limit-pick').addEventListener('input', () => {
+  $('#global-limit-val').textContent = fmtShort(parseInt($('#global-limit-pick').value) * 60);
+});
+$('#global-limit-pick').addEventListener('change', () => {
+  if ($('#global-limit-on').checked) saveGlobalLimit();
+});
+
 $('#goals-time-pick').addEventListener('input', () => {
   const v = parseInt($('#goals-time-pick').value);
   const h = Math.floor(v / 60);
@@ -574,7 +755,7 @@ $('#goals-save-btn').addEventListener('click', async () => {
 // ---------- live updates ----------
 api.onTick((p) => {
   // keep the hero counter & current app fresh without a full reload
-  if (!$('#page-dashboard').classList.contains('hidden') && dashRange === 'Today') {
+  if (!$('#page-dashboard').classList.contains('hidden') && dashRange === 'Today' && dashOffset === 0) {
     $('#hero-time').innerHTML = fmtLong(p.todaySeconds);
   }
   $('#hero-current-app').textContent = p.currentApp || '—';
@@ -593,6 +774,7 @@ function escapeHtml(s) {
 
 // ---------- boot ----------
 go('dashboard');
+api.getSettings().then((s) => applyStudyUI(!!s.studyMode));
 setInterval(() => { if (!$('#page-dashboard').classList.contains('hidden')) loadDashboard(); }, 30000);
 
 })();

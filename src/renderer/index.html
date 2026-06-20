@@ -44,6 +44,11 @@
             <p class="subtle" id="today-date">—</p>
           </div>
           <div class="range-tabs" data-scope="dashboard">
+            <div class="date-nav" data-scope="dashboard">
+              <button class="date-nav-btn" data-dir="prev" title="Previous">&#8249;</button>
+              <span class="date-nav-label" id="dash-nav-label">Today</span>
+              <button class="date-nav-btn" data-dir="next" title="Next" disabled>&#8250;</button>
+            </div>
             <button class="range-tab active" data-range="Today">Today</button>
             <button class="range-tab" data-range="7">7 Days</button>
             <button class="range-tab" data-range="14">14 Days</button>
@@ -57,6 +62,7 @@
           <div class="hero-inner">
             <div class="hero-top">
               <span class="hero-pill"><span class="dot"></span> TRACKING</span>
+              <button class="hero-pause" id="hero-study" title="Study time is tracked but doesn't count against your daily limits">&#128218; Study Mode</button>
               <button class="hero-pause" id="hero-pause">&#10073;&#10073; Pause</button>
             </div>
             <p class="hero-label" id="hero-label">Today's Screen Time</p>
@@ -106,7 +112,13 @@
             </div>
           </div>
           <div class="card">
-            <div class="card-head"><h3>Top Applications</h3><span class="subtle">&#8595;</span></div>
+            <div class="card-head"><h3>Top Applications</h3>
+              <select id="dash-filter" title="Filter by activity type" style="font-size:12px;padding:4px 8px;border-radius:8px;background:var(--card-2);color:var(--text);border:1px solid var(--border)">
+                <option value="all">All</option>
+                <option value="play">Play only</option>
+                <option value="study">Study only</option>
+              </select>
+            </div>
             <ol class="top-list" id="top-list"></ol>
           </div>
         </div>
@@ -137,6 +149,11 @@
         <div class="page-head">
           <div><h1>Statistics</h1><p class="subtle">Your usage over time</p></div>
           <div class="range-tabs" data-scope="stats">
+            <div class="date-nav" data-scope="stats">
+              <button class="date-nav-btn" data-dir="prev" title="Previous">&#8249;</button>
+              <span class="date-nav-label" id="stats-nav-label">This week</span>
+              <button class="date-nav-btn" data-dir="next" title="Next" disabled>&#8250;</button>
+            </div>
             <button class="range-tab" data-range="Today">Today</button>
             <button class="range-tab active" data-range="7">7 Days</button>
             <button class="range-tab" data-range="14">14 Days</button>
@@ -153,6 +170,40 @@
           <div class="card-head"><h3>Daily Usage</h3></div>
           <div class="bars" id="day-bars"></div>
         </div>
+
+        <!-- Peak hours -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Peak Hours</h3>
+            <span class="badge" id="peak-hour-badge">—</span>
+          </div>
+          <div class="hour-bars" id="hour-bars"></div>
+          <div class="hour-scrub">
+            <input type="range" id="hour-scrub" min="0" max="23" step="1" value="23" />
+            <div class="hour-scrub-readout">
+              <span class="subtle small">As of <strong id="hour-scrub-time">23:00</strong></span>
+              <span class="subtle small">Accumulated by then: <strong id="hour-scrub-total">0m</strong> · <span id="hour-scrub-pct">0%</span> of the day</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Most productive day + Trend -->
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head"><h3>By Day of Week</h3><span class="subtle small" id="dow-note">Last 30 days</span></div>
+            <div class="dow-bars" id="dow-bars"></div>
+            <div class="dow-summary" id="dow-summary"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Trend</h3><span class="badge" id="stat-trend-badge">—</span></div>
+            <ul class="kv">
+              <li><span class="k"><span class="sq c-blue"></span> Last 7 days avg/day</span><span class="v" id="stat-trend-recent">0m</span></li>
+              <li><span class="k"><span class="sq c-grey"></span> Previous 7 days avg/day</span><span class="v" id="stat-trend-prior">0m</span></li>
+              <li class="trend-note" id="stat-trend-note">—</li>
+            </ul>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-head"><h3>Application Breakdown</h3></div>
           <div class="breakdown" id="app-breakdown"></div>
@@ -263,6 +314,7 @@
               <div>
                 <div class="streak-count"><span id="streak-current">0</span> day streak</div>
                 <div class="subtle">Best: <span id="streak-best">0</span> days</div>
+                <div class="subtle">Freezers: <span id="streak-freezers">0</span> &#10052;&#65039; <span class="small" id="streak-freezer-hint"></span></div>
                 <div class="streak-msg subtle" id="streak-msg"></div>
               </div>
             </div>
@@ -290,6 +342,19 @@
             <h3>Daily Limits</h3>
             <button class="btn ghost" id="goals-add-btn" style="padding:6px 14px;font-size:13px">+ Add Limit</button>
           </div>
+          <div class="goal-row" id="global-limit-row">
+            <div class="goal-info">
+              <div class="goal-name">All apps (total screen time)</div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <label class="switch"><input type="checkbox" id="global-limit-on" /><span class="slider"></span></label>
+                <div class="slider-ctrl" style="min-width:200px">
+                  <input type="range" id="global-limit-pick" min="15" max="720" step="15" value="120" />
+                  <span class="slider-val" id="global-limit-val">2h</span>
+                </div>
+                <span class="subtle small" id="global-limit-status"></span>
+              </div>
+            </div>
+          </div>
           <div id="goals-add-form" class="hidden">
             <div class="goals-add-row">
               <select id="goals-app-pick"></select>
@@ -310,6 +375,7 @@
         <div class="page-head"><div><h1>Settings</h1><p class="subtle">Configure tracking behavior</p></div></div>
         <div class="card">
           <div class="setting"><div><div class="set-title">Tracking</div><div class="subtle">Count time spent in apps</div></div><label class="switch"><input type="checkbox" id="set-tracking" /><span class="slider"></span></label></div>
+          <div class="setting"><div><div class="set-title">Study Mode</div><div class="subtle">Still tracks &amp; shows your time, but it won't count against daily limits or break your streak</div></div><label class="switch"><input type="checkbox" id="set-studymode" /><span class="slider"></span></label></div>
           <div class="setting"><div><div class="set-title">Start at login</div><div class="subtle">Run automatically in the background 24/7</div></div><label class="switch"><input type="checkbox" id="set-autolaunch" /><span class="slider"></span></label></div>
           <div class="setting"><div><div class="set-title">Minimize to tray on close</div><div class="subtle">Keep tracking when the window is closed</div></div><label class="switch"><input type="checkbox" id="set-tray" /><span class="slider"></span></label></div>
           <div class="setting"><div><div class="set-title">Stop counting after inactivity</div><div class="subtle">If you don't touch the computer for this long — time won't count</div></div><select id="set-idle"><option value="60">1 minute</option><option value="120">2 minutes</option><option value="180">3 minutes</option><option value="300">5 minutes</option><option value="600">10 minutes</option></select></div>
