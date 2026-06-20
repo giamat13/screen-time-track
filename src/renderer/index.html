@@ -29,6 +29,7 @@
         <button class="nav-item active" data-page="dashboard"><span class="ico">&#9737;</span><span class="lbl">Dashboard</span></button>
         <button class="nav-item" data-page="statistics"><span class="ico">&#9776;</span><span class="lbl">Statistics</span></button>
         <button class="nav-item" data-page="breaks"><span class="ico">&#9200;</span><span class="lbl">Breaks</span></button>
+        <button class="nav-item" data-page="goals"><span class="ico">&#127919;</span><span class="lbl">Goals</span></button>
       </div>
       <button class="nav-item nav-settings" data-page="settings"><span class="ico">&#9881;</span><span class="lbl">Settings</span></button>
     </nav>
@@ -242,6 +243,65 @@
               <span class="slider-val" id="brk-beep-int-val">0.4s</span>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- ============ GOALS & STREAKS ============ -->
+      <section class="page hidden" id="page-goals">
+        <div class="page-head">
+          <div>
+            <h1>Goals &amp; Streaks</h1>
+            <p class="subtle">Track what you want to accomplish each day</p>
+          </div>
+        </div>
+
+        <!-- Streak card -->
+        <div class="card streak-card">
+          <div class="streak-header">
+            <div class="streak-flame">
+              <span class="flame-icon" id="flame-icon">&#128293;</span>
+              <div>
+                <div class="streak-count"><span id="streak-current">0</span> day streak</div>
+                <div class="subtle">Best: <span id="streak-best">0</span> days</div>
+                <div class="streak-msg subtle" id="streak-msg"></div>
+              </div>
+            </div>
+            <div class="streak-calendar" id="streak-calendar"></div>
+          </div>
+        </div>
+
+        <!-- Weekly report -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Weekly Report</h3>
+            <div style="display:flex;align-items:center;gap:10px">
+              <span class="badge" id="weekly-total">0h</span>
+              <span class="subtle small" id="weekly-vs"></span>
+            </div>
+          </div>
+          <div class="weekly-bars" id="weekly-bars"></div>
+          <div class="card-head" style="margin-top:6px"><h3>Top Apps This Week</h3></div>
+          <div class="breakdown" id="weekly-apps"></div>
+        </div>
+
+        <!-- Daily goals -->
+        <div class="card">
+          <div class="card-head">
+            <h3>Daily Limits</h3>
+            <button class="btn ghost" id="goals-add-btn" style="padding:6px 14px;font-size:13px">+ Add Limit</button>
+          </div>
+          <div id="goals-add-form" class="hidden">
+            <div class="goals-add-row">
+              <select id="goals-app-pick"></select>
+              <div class="slider-ctrl" style="min-width:200px">
+                <input type="range" id="goals-time-pick" min="5" max="480" step="5" value="60" />
+                <span class="slider-val" id="goals-time-val">1h</span>
+              </div>
+              <button class="btn primary" id="goals-save-btn">Save</button>
+              <button class="btn ghost" id="goals-cancel-btn">Cancel</button>
+            </div>
+          </div>
+          <div id="goals-list"></div>
         </div>
       </section>
 

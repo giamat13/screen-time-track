@@ -16,6 +16,11 @@ contextBridge.exposeInMainWorld('api', {
   getBreakStatus: () => ipcRenderer.invoke('breaks:getStatus'),
   respondBreak: (choice) => ipcRenderer.invoke('breaks:respond', choice),
 
+  getGoals: () => ipcRenderer.invoke('goals:get'),
+  setGoal: (appName, targetSec) => ipcRenderer.invoke('goals:set', appName, targetSec),
+  getStreaks: () => ipcRenderer.invoke('streaks:get'),
+  getWeeklyReport: () => ipcRenderer.invoke('weekly:get'),
+
   onTick: (cb) => ipcRenderer.on('tick', (_e, d) => cb(d)),
   onTrackingChanged: (cb) => ipcRenderer.on('tracking-changed', (_e, d) => cb(d)),
   onBreakPrompt: (cb) => ipcRenderer.on('break-prompt', (_e, d) => cb(d)),

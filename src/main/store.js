@@ -10,6 +10,8 @@ function defaults() {
     version: 1,
     installedAt: new Date().toISOString(),
     days: {}, // 'YYYY-MM-DD' -> { apps: { name: seconds }, total, firstSeen, lastSeen }
+    goals: {}, // { appName: targetSeconds }
+    streaks: { current: 0, best: 0, lastCheckedDate: null, metDays: {} },
     settings: {
       tracking: true,
       idleThreshold: 120, // seconds with no input => not counted
@@ -45,6 +47,11 @@ function load() {
         data.settings.breakReminder = Object.assign(defaults().settings.breakReminder, parsed.settings.breakReminder);
       }
       data.days = parsed.days || {};
+      data.goals = parsed.goals || {};
+      if (parsed.streaks) {
+        data.streaks = Object.assign(defaults().streaks, parsed.streaks);
+        data.streaks.metDays = parsed.streaks.metDays || {};
+      }
     }
   } catch (e) {
     console.error('[store] load failed:', e.message);
@@ -120,6 +127,90 @@ function dayTotal(offset = 0) {
   return day ? day.total : 0;
 }
 
+function getGoals() { return data.goals || {}; }
+
+function setGoal(appName, targetSeconds) {
+  if (!data.goals) data.goals = {};
+  if (!targetSeconds || targetSeconds <= 0) {
+    delete data.goals[appName];
+  } else {
+    data.goals[appName] = Math.round(targetSeconds);
+  }
+  flush();
+  return data.goals;
+}
+
+function checkGoalsMet(key) {
+  const goals = data.goals || {};
+  if (Object.keys(goals).length === 0) return null;
+  const day = data.days[key];
+  if (!day) return true; // no usage = all limits respected
+  for (const [appName, targetSec] of Object.entries(goals)) {
+    const actual = (day.apps && day.apps[appName]) || 0;
+    if (actual > targetSec) return false; // exceeded limit
+  }
+  return true;
+}
+
+function syncStreaks() {
+  if (!data.streaks) data.streaks = defaults().streaks;
+  if (!data.streaks.metDays) data.streaks.metDays = {};
+  const today = dateKey();
+  const goals = data.goals || {};
+  if (Object.keys(goals).length > 0) {
+    // Re-evaluate the last 30 days so the calendar stays current
+    for (let i = 30; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      data.streaks.metDays[dateKey(d)] = checkGoalsMet(dateKey(d));
+    }
+  }
+  let streak = 0;
+  const d = new Date();
+  while (streak < 366) {
+    const k = dateKey(d);
+    if (data.streaks.metDays[k] === true) {
+      streak++;
+      d.setDate(d.getDate() - 1);
+    } else {
+      break;
+    }
+  }
+  data.streaks.current = streak;
+  if (streak > (data.streaks.best || 0)) data.streaks.best = streak;
+  data.streaks.lastCheckedDate = today;
+}
+
+function getStreaks() {
+  syncStreaks();
+  scheduleSave();
+  return data.streaks;
+}
+
+function weeklyReport() {
+  syncStreaks();
+  const result = { days: [], total: 0, apps: {}, prevWeekTotal: 0 };
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = dateKey(d);
+    const day = data.days[key];
+    const dayTotal = day ? day.total : 0;
+    const apps = day ? (day.apps || {}) : {};
+    const goalMet = (data.streaks.metDays && data.streaks.metDays[key]) ?? null;
+    result.days.push({ date: key, total: dayTotal, apps, goalMet });
+    result.total += dayTotal;
+    for (const [a, s] of Object.entries(apps)) result.apps[a] = (result.apps[a] || 0) + s;
+  }
+  for (let i = 13; i >= 7; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const day = data.days[dateKey(d)];
+    result.prevWeekTotal += day ? day.total : 0;
+  }
+  return result;
+}
+
 function getSettings() { return data.settings; }
 function setSettings(partial) {
   partial = partial || {};
@@ -144,5 +235,9 @@ module.exports = {
   dayTotal,
   getSettings,
   setSettings,
+  getGoals,
+  setGoal,
+  getStreaks,
+  weeklyReport,
   raw: () => data
 };

@@ -277,6 +277,11 @@ function setupIpc() {
   ipcMain.handle('breaks:testBeep', () => { if (breakReminder) breakReminder.testBeep(); });
   ipcMain.handle('breaks:getStatus', () => breakReminder ? breakReminder.getStatus() : { isBeeping: false, nextCheckAt: null });
   ipcMain.handle('breaks:respond', (_e, choice) => breakReminder ? breakReminder.respond(choice) : { isBeeping: false, nextCheckAt: null });
+
+  ipcMain.handle('goals:get', () => store.getGoals());
+  ipcMain.handle('goals:set', (_e, appName, targetSec) => store.setGoal(appName, targetSec));
+  ipcMain.handle('streaks:get', () => store.getStreaks());
+  ipcMain.handle('weekly:get', () => store.weeklyReport());
   ipcMain.handle('tracking:set', (_e, on) => { setTracking(on); return store.getSettings().tracking; });
   ipcMain.handle('tracking:toggle', () => { setTracking(!store.getSettings().tracking); return store.getSettings().tracking; });
   ipcMain.handle('session:reset', () => { tracker.resetSession(); return tracker.getStatus(); });

@@ -63,6 +63,7 @@ function go(page) {
   if (page === 'statistics') loadStats();
   if (page === 'settings') loadSettings();
   if (page === 'breaks') loadBreaks();
+  if (page === 'goals') loadGoals();
 }
 $$('.nav-item').forEach((n) => n.addEventListener('click', () => go(n.dataset.page)));
 $('#hamburger').addEventListener('click', () => $('.sidebar').classList.toggle('collapsed'));
@@ -391,6 +392,184 @@ $$('#break-modal .modal-btn').forEach((b) => b.addEventListener('click', async (
 }));
 
 api.onBreakPrompt((d) => showBreakModal(d));
+
+// ---------- goals & streaks ----------
+let goalsData = {};
+
+function rendDateKey(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+async function loadGoals() {
+  const [goals, streaks, weekly, dash] = await Promise.all([
+    api.getGoals(),
+    api.getStreaks(),
+    api.getWeeklyReport(),
+    api.getDashboard('Today')
+  ]);
+  goalsData = goals;
+  renderStreak(streaks);
+  renderWeeklyReport(weekly);
+  renderGoalsList(goals, dash);
+}
+
+function renderStreak(streaks) {
+  const { current, best, metDays } = streaks;
+  $('#streak-current').textContent = current;
+  $('#streak-best').textContent = best;
+  const flame = $('#flame-icon');
+  if (current === 0) flame.classList.add('cold'); else flame.classList.remove('cold');
+  const msgs = ['Start a streak by meeting your goals today!', 'Great start — keep it going!', 'On a roll!', 'Impressive consistency!', 'Unstoppable!'];
+  $('#streak-msg').textContent = current === 0 ? msgs[0] : current < 3 ? msgs[1] : current < 7 ? msgs[2] : current < 14 ? msgs[3] : msgs[4];
+
+  const cal = $('#streak-calendar');
+  cal.innerHTML = '';
+  const DAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+  const hasGoals = Object.keys(goalsData).length > 0;
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = rendDateKey(d);
+    const dayLbl = DAY_NAMES[d.getDay()];
+    const met = metDays && metDays[key];
+    const cls = !hasGoals ? '' : (met === true ? 'met' : (met === false ? 'unmet' : ''));
+    const wrap = document.createElement('div');
+    wrap.className = 'streak-dot-wrap';
+    wrap.innerHTML = `<div class="streak-dot ${cls}" title="${key}"></div><div class="sd-day">${dayLbl}</div>`;
+    cal.appendChild(wrap);
+  }
+}
+
+function renderWeeklyReport(weekly) {
+  const { days, total, prevWeekTotal, apps } = weekly;
+  $('#weekly-total').textContent = fmtShort(total);
+  if (prevWeekTotal > 0) {
+    const pct = Math.round(((total - prevWeekTotal) / prevWeekTotal) * 100);
+    $('#weekly-vs').textContent = (pct >= 0 ? '↑ ' : '↓ ') + Math.abs(pct) + '% vs last week';
+  } else {
+    $('#weekly-vs').textContent = '';
+  }
+
+  const barsEl = $('#weekly-bars');
+  barsEl.innerHTML = '';
+  const max = Math.max(...days.map((d) => d.total), 1);
+  const DAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+  days.forEach((day) => {
+    const d = new Date(day.date + 'T00:00:00');
+    const h = Math.round((day.total / max) * 100);
+    const col = document.createElement('div');
+    col.className = 'weekly-col' + (day.goalMet === true ? ' met' : '');
+    col.innerHTML = `<div class="wval">${day.total > 0 ? fmtShort(day.total) : ''}</div>
+      <div class="wfill" style="height:${h}%"></div>
+      <div class="wlabel">${DAY_NAMES[d.getDay()]}</div>`;
+    barsEl.appendChild(col);
+  });
+
+  const appsEl = $('#weekly-apps');
+  appsEl.innerHTML = '';
+  const topApps = Object.entries(apps).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  if (!topApps.length) { appsEl.innerHTML = '<div class="subtle">No usage this week</div>'; return; }
+  const appMax = topApps[0][1] || 1;
+  topApps.forEach(([name, sec]) => {
+    const row = document.createElement('div');
+    row.className = 'bd-row';
+    row.innerHTML = `<span class="name">${escapeHtml(name)}</span>
+      <span class="bar"><span style="width:${Math.round((sec / appMax) * 100)}%"></span></span>
+      <span class="val">${fmt(sec)}</span>`;
+    appsEl.appendChild(row);
+  });
+}
+
+function renderGoalsList(goals, dash) {
+  const list = $('#goals-list');
+  const entries = Object.entries(goals);
+  if (!entries.length) {
+    list.innerHTML = '<div class="goals-empty">No limits yet — click "Add Limit" to cap daily usage of an app</div>';
+    return;
+  }
+  list.innerHTML = '';
+  const todayMap = {};
+  (dash.topApplications || []).forEach((a) => { todayMap[a.name] = a.sec; });
+
+  entries.forEach(([appName, targetSec]) => {
+    const actual = todayMap[appName] || 0;
+    const pct = Math.min(100, Math.round((actual / targetSec) * 100));
+    const over = actual > targetSec;
+    const barColor = over ? 'var(--pink)' : pct >= 80 ? 'var(--amber)' : '';
+    const row = document.createElement('div');
+    row.className = 'goal-row';
+    row.innerHTML = `<div class="goal-info">
+        <div class="goal-name">${escapeHtml(appName)}</div>
+        <div class="goal-progress-wrap">
+          <div class="goal-bar"><div class="goal-bar-fill" style="width:${pct}%;${barColor ? 'background:' + barColor : ''}"></div></div>
+          <span class="goal-time">${fmt(actual)} / ${fmt(targetSec)}</span>
+          ${over ? '<span style="color:var(--pink);font-size:15px" title="Limit exceeded">⚠</span>' : ''}
+        </div>
+      </div>
+      <button class="goal-del" data-app="${escapeHtml(appName)}" title="Remove goal">✕</button>`;
+    list.appendChild(row);
+  });
+
+  list.querySelectorAll('.goal-del').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      await api.setGoal(btn.dataset.app, 0);
+      const [goals, streaks, dash2] = await Promise.all([api.getGoals(), api.getStreaks(), api.getDashboard('Today')]);
+      goalsData = goals;
+      renderStreak(streaks);
+      renderGoalsList(goalsData, dash2);
+      toast('Goal removed');
+    });
+  });
+}
+
+$('#goals-add-btn').addEventListener('click', async () => {
+  const form = $('#goals-add-form');
+  const isHidden = form.classList.contains('hidden');
+  form.classList.toggle('hidden', !isHidden);
+  if (isHidden) {
+    const d = await api.getDashboard('7');
+    const pick = $('#goals-app-pick');
+    pick.innerHTML = '';
+    const apps = (d.topApplications || []).filter((a) => !goalsData[a.name]);
+    if (!apps.length) {
+      const opt = document.createElement('option');
+      opt.textContent = 'All recent apps already have limits';
+      pick.appendChild(opt);
+    } else {
+      apps.forEach((a) => {
+        const opt = document.createElement('option');
+        opt.value = a.name;
+        opt.textContent = a.name;
+        pick.appendChild(opt);
+      });
+    }
+  }
+});
+
+$('#goals-cancel-btn').addEventListener('click', () => $('#goals-add-form').classList.add('hidden'));
+
+$('#goals-time-pick').addEventListener('input', () => {
+  const v = parseInt($('#goals-time-pick').value);
+  const h = Math.floor(v / 60);
+  const m = v % 60;
+  $('#goals-time-val').textContent = h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
+});
+
+$('#goals-save-btn').addEventListener('click', async () => {
+  const appName = $('#goals-app-pick').value;
+  const mins = parseInt($('#goals-time-pick').value);
+  if (!appName || !mins) return;
+  await api.setGoal(appName, mins * 60);
+  $('#goals-add-form').classList.add('hidden');
+  const [goals, streaks, dash] = await Promise.all([api.getGoals(), api.getStreaks(), api.getDashboard('Today')]);
+  goalsData = goals;
+  renderStreak(streaks);
+  renderGoalsList(goalsData, dash);
+  toast(`Limit set: ${appName} — up to ${fmtShort(mins * 60)}/day`);
+});
 
 // ---------- live updates ----------
 api.onTick((p) => {

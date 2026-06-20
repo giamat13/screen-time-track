@@ -5,6 +5,8 @@ const PENALTY_FLOOR_DEV_MS = 3 * 1000;  // ...except in dev mode, where 3s is fi
 const PENALTY_MAX_SKIPS = 4;            // cap the speed-up at 2^4 = 16x faster
 const BREAK_BASE_MIN = 5;          // suggested break length with no penalty
 const BREAK_PENALTY_STEP_MIN = 5;  // extra suggested break minutes added per skipped break
+const BREAK_MIN_MS = 5 * 60 * 1000;   // minimum time before next timer starts after "break"
+const BREAK_MIN_DEV_MS = 15 * 1000;   // same, in dev mode
 
 class BreakReminder {
   constructor({ getSettings, powerMonitor, onPrompt }) {
@@ -20,6 +22,7 @@ class BreakReminder {
     this._awayAt = null;          // when the user went idle (estimated)
     this._skipCount = 0;          // consecutive "no energy" skips since the last real break
     this._owedExtraMin = 0;       // extra break minutes owed because of skips
+    this._breakEndAt = null;      // earliest time the presence timer may restart after a "break"
   }
 
   start() {
@@ -34,6 +37,7 @@ class BreakReminder {
     this._nextCheckAt = null;
     this._activeStartedAt = null;
     this._awayAt = null;
+    this._breakEndAt = null;
     // penalty state (skipCount / owedExtraMin) is intentionally preserved across
     // restart() so tweaking the alarm sliders doesn't wipe an outstanding debt.
   }
@@ -66,9 +70,11 @@ class BreakReminder {
   respond(choice) {
     if (!this._isBeeping) return this.getStatus();
     if (choice === 'break') {
-      // you're actually leaving — wipe the debt and start a fresh full interval
+      // you're actually leaving — wipe the debt and enforce a minimum break window
       this._skipCount = 0;
       this._owedExtraMin = 0;
+      const s = this._getSettings().breakReminder || {};
+      this._breakEndAt = Date.now() + (s.devMode ? BREAK_MIN_DEV_MS : BREAK_MIN_MS);
     } else if (choice === 'skip') {
       // no energy — penalty: ring back twice as fast and owe more rest next time
       this._skipCount = Math.min(this._skipCount + 1, PENALTY_MAX_SKIPS);
@@ -129,6 +135,17 @@ class BreakReminder {
     }
 
     // present at the computer
+
+    // After clicking "taking a break", enforce a minimum break window before resuming
+    if (this._breakEndAt !== null) {
+      if (now < this._breakEndAt) {
+        this._activeStartedAt = null;
+        this._awayAt = null;
+        return;
+      }
+      this._breakEndAt = null; // minimum time elapsed — allow timer to start
+    }
+
     if (this._activeStartedAt === null) {
       // fresh start (first run or returned after 10+ min away)
       this._activeStartedAt = now;
@@ -193,9 +210,17 @@ class BreakReminder {
   }
 
   _killBeepProc() {
-    if (this._beepProc) {
-      try { this._beepProc.kill(); } catch {}
-      this._beepProc = null;
+    if (!this._beepProc) return;
+    const pid = this._beepProc.pid;
+    this._beepProc.removeAllListeners('exit');
+    try { this._beepProc.kill(); } catch {}
+    this._beepProc = null;
+    // taskkill is more reliable than .kill() on Windows for terminating child processes
+    if (pid) {
+      try {
+        spawn('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true, detached: true })
+          .on('error', () => {});
+      } catch {}
     }
   }
 }
