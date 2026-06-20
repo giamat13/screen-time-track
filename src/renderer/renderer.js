@@ -69,6 +69,7 @@ function go(page) {
   if (page === 'settings') loadSettings();
   if (page === 'breaks') loadBreaks();
   if (page === 'goals') loadGoals();
+  if (page === 'reminders') loadReminders();
 }
 $$('.nav-item').forEach((n) => n.addEventListener('click', () => go(n.dataset.page)));
 $('#hamburger').addEventListener('click', () => $('.sidebar').classList.toggle('collapsed'));
@@ -750,6 +751,89 @@ $('#goals-save-btn').addEventListener('click', async () => {
   renderStreak(streaks);
   renderGoalsList(goalsData, dash);
   toast(`Limit set: ${appName} — up to ${fmtShort(mins * 60)}/day`);
+});
+
+// ---------- reminders ----------
+async function loadReminders() {
+  const reminders = await api.getReminders();
+  renderReminders(reminders);
+}
+
+function renderReminders(reminders) {
+  const list = $('#rem-list');
+  if (!reminders.length) {
+    list.innerHTML = '<div class="rem-empty subtle">No reminders yet — click &ldquo;+ Add Reminder&rdquo; to create one</div>';
+    return;
+  }
+  list.innerHTML = '';
+  reminders.forEach((r) => {
+    const card = document.createElement('div');
+    card.className = 'card rem-card';
+    card.innerHTML = `
+      <div class="setting">
+        <div style="display:flex;align-items:center;gap:14px">
+          <span style="font-size:26px">&#128276;</span>
+          <div>
+            <div class="set-title" style="margin-bottom:2px">${escapeHtml(r.message)}</div>
+            <div class="subtle">${r.time}</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <label class="switch">
+            <input type="checkbox" class="rem-toggle" data-id="${escapeHtml(r.id)}" ${r.enabled ? 'checked' : ''} />
+            <span class="slider"></span>
+          </label>
+          <button class="btn ghost rem-del" data-id="${escapeHtml(r.id)}" style="padding:6px 12px;font-size:13px">&#10005;</button>
+        </div>
+      </div>`;
+    list.appendChild(card);
+  });
+
+  list.querySelectorAll('.rem-toggle').forEach((cb) => {
+    cb.addEventListener('change', async () => {
+      const rems = await api.getReminders();
+      const r = rems.find((x) => x.id === cb.dataset.id);
+      if (!r) return;
+      await api.setReminder({ ...r, enabled: cb.checked });
+      toast(cb.checked ? 'Reminder enabled' : 'Reminder disabled');
+    });
+  });
+
+  list.querySelectorAll('.rem-del').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      await api.deleteReminder(btn.dataset.id);
+      const reminders = await api.getReminders();
+      renderReminders(reminders);
+      toast('Reminder deleted');
+    });
+  });
+}
+
+$('#rem-add-btn').addEventListener('click', () => {
+  const form = $('#rem-add-form');
+  form.classList.toggle('hidden');
+  if (!form.classList.contains('hidden')) $('#rem-time').focus();
+});
+
+$('#rem-cancel').addEventListener('click', () => {
+  $('#rem-add-form').classList.add('hidden');
+  $('#rem-time').value = '';
+  $('#rem-message').value = '';
+});
+
+$('#rem-save').addEventListener('click', async () => {
+  const time = $('#rem-time').value;
+  const message = $('#rem-message').value.trim();
+  if (!time) { toast('Please set a time', true); return; }
+  if (!message) { toast('Please enter a message', true); return; }
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  await api.setReminder({ id, time, message, enabled: true });
+  $('#rem-add-form').classList.add('hidden');
+  $('#rem-time').value = '';
+  $('#rem-message').value = '';
+  const reminders = await api.getReminders();
+  renderReminders(reminders);
+  toast('Reminder saved');
 });
 
 // ---------- live updates ----------

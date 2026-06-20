@@ -1,0 +1,116 @@
+:root {
+  --bg: #0b0c10;
+  --border: #232733;
+  --text: #e7eaf0;
+  --muted: #8b93a3;
+  --accent: #2e9bff;
+  --accent-2: #1f6fd6;
+  --green: #34d399;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.drag-bar {
+  height: 40px;
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--muted);
+  user-select: none;
+}
+
+.popup-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 40px;
+}
+
+.popup-icon {
+  font-size: 80px;
+  line-height: 1;
+  animation: ring 1.2s ease-in-out infinite;
+}
+
+@keyframes ring {
+  0%, 100% { transform: rotate(0deg); }
+  10% { transform: rotate(-12deg); }
+  20% { transform: rotate(12deg); }
+  30% { transform: rotate(-8deg); }
+  40% { transform: rotate(8deg); }
+  50% { transform: rotate(0deg); }
+}
+
+.popup-message {
+  text-align: center;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--text);
+  max-width: 700px;
+  word-break: break-word;
+}
+
+.popup-time {
+  color: var(--muted);
+  font-size: 16px;
+  letter-spacing: 0.5px;
+}
+
+.popup-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.btn-close {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  padding: 14px 48px;
+  font-size: 18px;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.btn-close:hover:not(:disabled) { background: var(--accent-2); transform: scale(1.02); }
+.btn-close:disabled { opacity: 0.45; cursor: default; }
+.btn-close.ready {
+  background: var(--green);
+  animation: pulse-green 1s ease-in-out infinite;
+}
+
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.4); }
+  50% { box-shadow: 0 0 0 12px rgba(52, 211, 153, 0); }
+}
+
+.countdown {
+  color: var(--muted);
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.hidden { display: none !important; }

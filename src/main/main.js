@@ -26,6 +26,8 @@ let breakReminder = null;
 let isQuitting = false;
 let locked = false;
 let suspended = false;
+let reminderScheduler = null;
+const remindersFired = new Set();
 
 const ASSETS = path.join(__dirname, '..', '..', 'assets');
 
@@ -48,6 +50,7 @@ function bootstrap() {
     browserBridge.start();
     startTracker();
     startBreakReminder();
+    startReminderScheduler();
 
     if (startHidden || (store.getSettings().minimizeToTray && app.getLoginItemSettings().wasOpenedAtLogin)) {
       if (win) win.hide();
@@ -62,6 +65,7 @@ function bootstrap() {
     isQuitting = true;
     if (tracker) tracker.stop();
     if (breakReminder) breakReminder.stop();
+    if (reminderScheduler) clearInterval(reminderScheduler);
     browserBridge.stop();
     store.flush();
   });
@@ -213,6 +217,41 @@ function applyAutoLaunch(enabled) {
   }
 }
 
+// ---- scheduled reminders --------------------------------------------------
+function startReminderScheduler() {
+  reminderScheduler = setInterval(checkReminders, 30000);
+}
+
+function checkReminders() {
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const dateStr = store.dateKey(now);
+  for (const r of store.getReminders()) {
+    if (!r.enabled || r.time !== hhmm) continue;
+    const key = `${dateStr}|${r.id}`;
+    if (remindersFired.has(key)) continue;
+    remindersFired.add(key);
+    openReminderPopup(r);
+  }
+}
+
+function openReminderPopup(r) {
+  const popup = new BrowserWindow({
+    fullscreen: true,
+    frame: false,
+    alwaysOnTop: true,
+    backgroundColor: '#0b0c10',
+    icon: path.join(ASSETS, 'icon.png'),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+    }
+  });
+  popup.loadFile(path.join(__dirname, '..', 'renderer', 'reminder-popup.html'), {
+    query: { message: r.message || 'Reminder!', time: r.time || '' }
+  });
+}
+
 // ---- dashboard / stats computation ---------------------------------------
 const RANGE_DAYS = { Today: 1, '7': 7, '14': 14, '30': 30 };
 
@@ -319,6 +358,10 @@ function setupIpc() {
   ipcMain.handle('tracking:toggle', () => { setTracking(!store.getSettings().tracking); return store.getSettings().tracking; });
   ipcMain.handle('session:reset', () => { tracker.resetSession(); return tracker.getStatus(); });
 
+
+  ipcMain.handle('reminders:get', () => store.getReminders());
+  ipcMain.handle('reminders:set', (_e, r) => store.setReminder(r));
+  ipcMain.handle('reminders:delete', (_e, id) => store.deleteReminder(id));
 
   ipcMain.handle('win:control', (_e, action) => {
     if (!win) return;

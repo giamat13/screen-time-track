@@ -23,6 +23,10 @@ contextBridge.exposeInMainWorld('api', {
   getStreaks: () => ipcRenderer.invoke('streaks:get'),
   getWeeklyReport: () => ipcRenderer.invoke('weekly:get'),
 
+  getReminders: () => ipcRenderer.invoke('reminders:get'),
+  setReminder: (r) => ipcRenderer.invoke('reminders:set', r),
+  deleteReminder: (id) => ipcRenderer.invoke('reminders:delete', id),
+
   onTick: (cb) => ipcRenderer.on('tick', (_e, d) => cb(d)),
   onTrackingChanged: (cb) => ipcRenderer.on('tracking-changed', (_e, d) => cb(d)),
   onBreakPrompt: (cb) => ipcRenderer.on('break-prompt', (_e, d) => cb(d)),

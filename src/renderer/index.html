@@ -30,6 +30,7 @@
         <button class="nav-item" data-page="statistics"><span class="ico">&#9776;</span><span class="lbl">Statistics</span></button>
         <button class="nav-item" data-page="breaks"><span class="ico">&#9200;</span><span class="lbl">Breaks</span></button>
         <button class="nav-item" data-page="goals"><span class="ico">&#127919;</span><span class="lbl">Goals</span></button>
+        <button class="nav-item" data-page="reminders"><span class="ico">&#128276;</span><span class="lbl">Reminders</span></button>
       </div>
       <button class="nav-item nav-settings" data-page="settings"><span class="ico">&#9881;</span><span class="lbl">Settings</span></button>
     </nav>
@@ -368,6 +369,35 @@
           </div>
           <div id="goals-list"></div>
         </div>
+      </section>
+
+      <!-- ============ REMINDERS ============ -->
+      <section class="page hidden" id="page-reminders">
+        <div class="page-head">
+          <div>
+            <h1>Reminders</h1>
+            <p class="subtle">Pop-ups that appear at a scheduled time</p>
+          </div>
+          <button class="btn primary" id="rem-add-btn" style="padding:9px 18px">+ Add Reminder</button>
+        </div>
+
+        <div class="card hidden" id="rem-add-form">
+          <div class="card-head"><h3>New Reminder</h3></div>
+          <div class="setting">
+            <div><div class="set-title">Time</div><div class="subtle">When to show the reminder each day</div></div>
+            <input type="time" id="rem-time" class="time-input" />
+          </div>
+          <div class="setting" style="flex-direction:column;align-items:flex-start;gap:8px">
+            <div class="set-title">Message</div>
+            <input type="text" id="rem-message" class="text-input" placeholder="What should the reminder say?" maxlength="200" />
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+            <button class="btn ghost" id="rem-cancel">Cancel</button>
+            <button class="btn primary" id="rem-save">Save</button>
+          </div>
+        </div>
+
+        <div id="rem-list"></div>
       </section>
 
       <!-- ============ SETTINGS ============ -->

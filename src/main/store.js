@@ -12,6 +12,7 @@ function defaults() {
     days: {}, // 'YYYY-MM-DD' -> { apps: { name: seconds }, total, firstSeen, lastSeen }
     goals: {}, // { appName: targetSeconds }
     globalLimit: 0, // total daily screen-time cap across all apps (seconds); 0 = off
+    reminders: [], // [{ id, time: 'HH:MM', message, enabled }]
     streaks: { current: 0, best: 0, lastCheckedDate: null, metDays: {}, freezers: 5, frozenDays: {} },
     settings: {
       tracking: true,
@@ -51,6 +52,7 @@ function load() {
       data.days = parsed.days || {};
       data.goals = parsed.goals || {};
       data.globalLimit = parsed.globalLimit || 0;
+      data.reminders = parsed.reminders || [];
       if (parsed.streaks) {
         data.streaks = Object.assign(defaults().streaks, parsed.streaks);
         data.streaks.metDays = parsed.streaks.metDays || {};
@@ -306,6 +308,23 @@ function weeklyReport() {
   return result;
 }
 
+function getReminders() { return data.reminders || []; }
+
+function setReminder(r) {
+  if (!data.reminders) data.reminders = [];
+  const idx = data.reminders.findIndex((x) => x.id === r.id);
+  if (idx >= 0) data.reminders[idx] = r;
+  else data.reminders.push(r);
+  flush();
+  return data.reminders;
+}
+
+function deleteReminder(id) {
+  data.reminders = (data.reminders || []).filter((r) => r.id !== id);
+  flush();
+  return data.reminders;
+}
+
 function getSettings() { return data.settings; }
 function setSettings(partial) {
   partial = partial || {};
@@ -338,5 +357,8 @@ module.exports = {
   weeklyReport,
   dayOfWeekStats,
   trendAnalysis,
+  getReminders,
+  setReminder,
+  deleteReminder,
   raw: () => data
 };

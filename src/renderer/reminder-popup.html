@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>Reminder</title>
+  <link rel="stylesheet" href="reminder-popup.css" />
+</head>
+<body>
+  <div class="drag-bar">
+    <span>&#128276; Reminder</span>
+  </div>
+  <div class="popup-wrap">
+    <div class="popup-icon">&#128276;</div>
+    <div class="popup-message" id="popup-message"></div>
+    <div class="popup-time" id="popup-time"></div>
+    <div class="popup-actions">
+      <button class="btn-close" id="popup-close">Close</button>
+      <div class="countdown hidden" id="countdown">Wait <span id="countdown-n">5</span>s&hellip;</div>
+    </div>
+  </div>
+  <script src="reminder-popup.js"></script>
+</body>
+</html>
