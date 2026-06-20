@@ -69,6 +69,7 @@ function go(page) {
   if (page === 'settings') loadSettings();
   if (page === 'breaks') loadBreaks();
   if (page === 'goals') loadGoals();
+  if (page === 'streak') loadGoals();
   if (page === 'reminders') loadReminders();
 }
 $$('.nav-item').forEach((n) => n.addEventListener('click', () => go(n.dataset.page)));
