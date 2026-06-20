@@ -70,6 +70,7 @@ function go(page) {
   if (page === 'breaks') loadBreaks();
   if (page === 'goals') loadGoals();
   if (page === 'streak') loadGoals();
+  if (page === 'habits') loadHabits();
   if (page === 'reminders') loadReminders();
 }
 $$('.nav-item').forEach((n) => n.addEventListener('click', () => go(n.dataset.page)));
@@ -543,19 +544,45 @@ function rendDateKey(d) {
 }
 
 async function loadGoals() {
-  const [goals, streaks, weekly, dash, gLimit] = await Promise.all([
+  const [goals, streaks, weekly, dash, gLimit, habits] = await Promise.all([
     api.getGoals(),
     api.getStreaks(),
     api.getWeeklyReport(),
     api.getDashboard('Today'),
-    api.getGlobalLimit()
+    api.getGlobalLimit(),
+    api.getHabits()
   ]);
   goalsData = goals;
   globalLimit = gLimit || 0;
   renderGlobalLimit(dash);
   renderStreak(streaks);
+  renderStreakHabits(habits);
   renderWeeklyReport(weekly);
   renderGoalsList(goals, dash);
+}
+
+// Shown on the Streak page: the habits that feed the unified streak, with today's /
+// this-week's progress so it's clear what still needs doing to keep the day green.
+function renderStreakHabits(habits) {
+  const card = $('#streak-habits-card');
+  const list = $('#streak-habits-list');
+  if (!card || !list) return;
+  if (!habits.length) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  list.innerHTML = '';
+  habits.forEach((h) => {
+    const u = h.unit === 'minutes' ? 'm' : '';
+    const per = h.freqType === 'weekly' ? 'this week' : 'today';
+    const row = document.createElement('div');
+    row.className = 'streak-habit-row';
+    row.style.setProperty('--hc', h.color || '#2e9bff');
+    row.innerHTML = `
+      <span class="sh-emoji">${escapeHtml(h.emoji)}</span>
+      <span class="sh-name">${escapeHtml(h.name)}</span>
+      <span class="sh-prog">${h.periodCount}/${h.periodTarget}${u} ${per}</span>
+      <span class="sh-check ${h.periodDone ? 'done' : ''}">${h.periodDone ? '✓' : '○'}</span>`;
+    list.appendChild(row);
+  });
 }
 
 function renderGlobalLimit(dash) {
@@ -837,6 +864,327 @@ $('#rem-save').addEventListener('click', async () => {
   toast('Reminder saved');
 });
 
+// ---------- habits ----------
+const HAB_EMOJIS = ['📚', '🏋️', '💧', '🧘', '🏃', '🍎', '💤', '🧹', '✍️', '🎸', '💊', '🌱', '🧠', '☀️', '💰', '📝', '🚭', '🦷'];
+const HAB_COLORS = ['#2e9bff', '#a78bfa', '#34d399', '#f5a623', '#f472b6', '#38bdf8', '#fb7185', '#facc15'];
+
+// per-unit slider config (range, step, suffix)
+const UNIT_CFG = {
+  count: { min: 1, max: 20, step: 1, suffix: '×', noun: 'Times' },
+  minutes: { min: 5, max: 240, step: 5, suffix: 'm', noun: 'Minutes' }
+};
+
+let habitLevels = {};   // id -> last seen level (to detect level-ups after a log)
+let editingHabitId = null;
+const habForm = { emoji: HAB_EMOJIS[0], color: HAB_COLORS[0], freq: 'daily', unit: 'count' };
+
+async function loadHabits() {
+  const habits = await api.getHabits();
+  habits.forEach((h) => { if (habitLevels[h.id] == null) habitLevels[h.id] = h.level; });
+  renderHabitSummary(habits);
+  renderHabitList(habits);
+}
+
+function unitStep(h) { return h.unit === 'minutes' ? 5 : 1; }
+function ringLabel(h) {
+  return h.unit === 'minutes' ? `Log +${unitStep(h)} min` : 'Log +1';
+}
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+function renderHabitSummary(habits) {
+  $('#hab-s-count').textContent = habits.length;
+  $('#hab-s-done').textContent = habits.filter((h) => h.periodDone).length;
+  $('#hab-s-streak').textContent = habits.reduce((m, h) => Math.max(m, h.streak), 0);
+  $('#hab-s-level').textContent = habits.reduce((s, h) => s + h.level, 0);
+}
+
+function freqLabel(h) {
+  const per = h.freqType === 'weekly' ? 'week' : 'day';
+  return h.unit === 'minutes' ? `${h.target} min / ${per}` : `${h.target}× per ${per}`;
+}
+
+function historyStrip(h) {
+  const todayK = rendDateKey(new Date());
+  const u = h.unit === 'minutes' ? 'm' : '×';
+  return h.history.map((d) => {
+    let cls = 'hh-cell';
+    if (d.met) cls += ' met';
+    else if (d.count > 0) cls += ' partial';
+    if (d.date === todayK) cls += ' today';
+    return `<div class="${cls}" title="${d.date}: ${d.count}${u}"></div>`;
+  }).join('');
+}
+
+function habitCard(h) {
+  const pct = Math.min(100, Math.round((h.periodCount / h.periodTarget) * 100));
+  const xpPct = Math.min(100, Math.round((h.xpInto / h.xpForNext) * 100));
+  const periodWord = h.freqType === 'weekly'
+    ? (h.streak === 1 ? 'week' : 'weeks')
+    : (h.streak === 1 ? 'day' : 'days');
+  const subUnit = h.unit === 'minutes' ? 'm' : '';
+  const ringInner = h.periodDone
+    ? '<span class="ring-check">✓</span>'
+    : `<span class="ring-count">${h.periodCount}</span><span class="ring-sub">/ ${h.periodTarget}${subUnit}</span>`;
+  const streakCls = h.streak > 0 ? 'streak-tag hot' : 'streak-tag cold';
+  const peak = (h.peakHour >= 0 && h.entryCount >= 3)
+    ? `<span class="hab-peak" title="When you usually log this">🕐 usually ${pad2(h.peakHour)}:00</span>` : '';
+  const defAmt = h.unit === 'minutes' ? Math.min(h.target, 30) : 1;
+  const stepAttr = h.unit === 'minutes' ? 5 : 1;
+
+  const card = document.createElement('div');
+  card.className = 'habit-card' + (h.periodDone ? ' done' : '');
+  card.style.setProperty('--hc', h.color || '#2e9bff');
+  card.dataset.id = h.id;
+  card.innerHTML = `
+    <div class="habit-main">
+      <div class="habit-emoji">${escapeHtml(h.emoji)}</div>
+      <div class="habit-body">
+        <div class="habit-top">
+          <div class="habit-name">${escapeHtml(h.name)}</div>
+          <div class="habit-tools">
+            <span class="level-badge">★ Lv ${h.level}</span>
+            <button class="hab-icon-btn hab-edit" title="Edit habit">✎</button>
+            <button class="hab-icon-btn del hab-del" title="Delete habit">✕</button>
+          </div>
+        </div>
+        <div class="habit-meta">
+          <span class="freq-tag">${freqLabel(h)}</span>
+          <span class="${streakCls}"><span class="fl">🔥</span> ${h.streak} ${periodWord} streak</span>
+          <span class="subtle small">· best ${h.bestStreak}</span>
+          ${peak}
+        </div>
+        <div class="xp-bar"><div class="xp-fill" data-w="${xpPct}"></div></div>
+        <div class="xp-text">${h.xpInto} / ${h.xpForNext} XP → Lv ${h.level + 1}</div>
+      </div>
+      <div class="habit-ring-wrap">
+        <button class="habit-ring hab-log" style="--pct:0" data-pct="${pct}" title="${ringLabel(h)}">
+          <span class="ring-inner">${ringInner}</span>
+        </button>
+        <div class="ring-btns">
+          <button class="ring-undo hab-undo" title="Undo" ${h.todayCount > 0 ? '' : 'disabled'}>−</button>
+          <button class="ring-more hab-more" title="Log a custom amount or backdate">＋…</button>
+        </div>
+      </div>
+    </div>
+    <div class="hab-log-panel hidden">
+      <div class="hlp-row">
+        <label class="hlp-lbl">Amount</label>
+        <input type="number" class="hlp-amt" min="1" step="${stepAttr}" value="${defAmt}" />
+        <span class="hlp-unit">${h.unit === 'minutes' ? 'min' : '×'}</span>
+      </div>
+      <div class="hlp-row">
+        <label class="hlp-lbl">When</label>
+        <input type="date" class="hlp-date time-input" />
+        <input type="time" class="hlp-time time-input" />
+      </div>
+      <div class="hlp-actions">
+        <button class="btn ghost hlp-cancel">Cancel</button>
+        <button class="btn primary hlp-add">Add entry</button>
+      </div>
+    </div>
+    <div class="habit-history">${historyStrip(h)}</div>`;
+
+  const step = unitStep(h);
+  card.querySelector('.hab-log').addEventListener('click', () => doLogHabit(h.id, step, card));
+  card.querySelector('.hab-undo').addEventListener('click', () => doLogHabit(h.id, -step, card));
+  card.querySelector('.hab-edit').addEventListener('click', () => openHabitForm(h));
+  card.querySelector('.hab-del').addEventListener('click', () => deleteHabitConfirmed(h.id));
+  wireLogPanel(card, h);
+  return card;
+}
+
+// inline panel for logging a custom amount on a chosen day & time (for backdating/stats)
+function wireLogPanel(card, h) {
+  const panel = card.querySelector('.hab-log-panel');
+  const dateEl = card.querySelector('.hlp-date');
+  const timeEl = card.querySelector('.hlp-time');
+  card.querySelector('.hab-more').addEventListener('click', () => {
+    const open = panel.classList.contains('hidden');
+    panel.classList.toggle('hidden', !open);
+    if (open) {
+      const now = new Date();
+      dateEl.value = rendDateKey(now);
+      timeEl.value = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+      dateEl.max = rendDateKey(now); // no future entries
+    }
+  });
+  card.querySelector('.hlp-cancel').addEventListener('click', () => panel.classList.add('hidden'));
+  card.querySelector('.hlp-add').addEventListener('click', () => {
+    const amount = parseInt(card.querySelector('.hlp-amt').value, 10);
+    if (!amount || amount <= 0) { toast('Enter an amount', true); return; }
+    const date = dateEl.value;
+    if (!date) { toast('Pick a day', true); return; }
+    doLogHabit(h.id, amount, card, { date, time: timeEl.value || '12:00' });
+  });
+}
+
+// Run the ring & XP bar from 0 to their target so they sweep in (on load and on log).
+function animateFills(scope) {
+  scope.querySelectorAll('.habit-ring').forEach((r) => r.style.setProperty('--pct', r.dataset.pct));
+  scope.querySelectorAll('.xp-fill').forEach((f) => { f.style.width = f.dataset.w + '%'; });
+}
+
+function renderHabitList(habits) {
+  const list = $('#hab-list');
+  if (!habits.length) {
+    list.innerHTML = '<div class="habits-empty">No habits yet — click &ldquo;+ New Habit&rdquo; to start building one 🌱</div>';
+    return;
+  }
+  list.innerHTML = '';
+  habits.forEach((h) => list.appendChild(habitCard(h)));
+  requestAnimationFrame(() => animateFills(list));
+}
+
+async function doLogHabit(id, amount, card, when) {
+  const updated = await api.logHabit(id, amount, when || null);
+  if (!updated) return;
+
+  const prevLevel = habitLevels[id] != null ? habitLevels[id] : updated.level;
+  const leveledUp = updated.level > prevLevel;
+  habitLevels[id] = updated.level;
+
+  const fresh = habitCard(updated);
+  card.replaceWith(fresh);
+  requestAnimationFrame(() => {
+    animateFills(fresh);
+    if (amount > 0) fresh.querySelector('.habit-ring').classList.add('pop');
+  });
+  if (updated.periodDone && amount > 0) fresh.classList.add('burst');
+  if (leveledUp) celebrateLevelUp(updated);
+  if (when) toast('Entry added');
+
+  const all = await api.getHabits();
+  renderHabitSummary(all);
+}
+
+async function deleteHabitConfirmed(id) {
+  await api.deleteHabit(id);
+  delete habitLevels[id];
+  loadHabits();
+  toast('Habit deleted');
+}
+
+// ---- level-up celebration ----
+function celebrateLevelUp(h) {
+  $('#levelup-emoji').textContent = h.emoji || '🎉';
+  $('#levelup-sub').textContent = `${h.name} reached level ${h.level}`;
+  const overlay = $('#levelup');
+  overlay.classList.remove('hidden', 'hide');
+  spawnConfetti();
+  clearTimeout(overlay._t);
+  overlay._t = setTimeout(() => {
+    overlay.classList.add('hide');
+    setTimeout(() => overlay.classList.add('hidden'), 300);
+  }, 1900);
+}
+
+function spawnConfetti() {
+  const box = $('#levelup-confetti');
+  box.innerHTML = '';
+  for (let i = 0; i < 30; i++) {
+    const p = document.createElement('span');
+    p.className = 'confetti-piece';
+    p.style.left = Math.random() * 100 + '%';
+    p.style.background = HAB_COLORS[i % HAB_COLORS.length];
+    p.style.animationDelay = (Math.random() * 0.25).toFixed(2) + 's';
+    box.appendChild(p);
+  }
+}
+
+// ---- add / edit form ----
+function buildHabitPickers() {
+  const ep = $('#hab-emoji-picker');
+  ep.innerHTML = '';
+  HAB_EMOJIS.forEach((e) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'emoji-opt';
+    b.textContent = e;
+    b.addEventListener('click', () => { habForm.emoji = e; syncHabitForm(); });
+    ep.appendChild(b);
+  });
+  const cp = $('#hab-color-picker');
+  cp.innerHTML = '';
+  HAB_COLORS.forEach((c) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'color-opt';
+    b.style.background = c;
+    b.dataset.color = c;
+    b.addEventListener('click', () => { habForm.color = c; syncHabitForm(); });
+    cp.appendChild(b);
+  });
+}
+
+// Re-range the target slider to the current unit and snap the value into bounds.
+function applyUnitToSlider() {
+  const cfg = UNIT_CFG[habForm.unit];
+  const t = $('#hab-target');
+  const cur = parseInt(t.value, 10) || cfg.min;
+  t.min = cfg.min; t.max = cfg.max; t.step = cfg.step;
+  let v = Math.min(cfg.max, Math.max(cfg.min, cur));
+  v = Math.round(v / cfg.step) * cfg.step;
+  t.value = v;
+}
+
+function targetText() { return $('#hab-target').value + UNIT_CFG[habForm.unit].suffix; }
+
+function syncHabitForm() {
+  $$('#hab-emoji-picker .emoji-opt').forEach((b) => b.classList.toggle('sel', b.textContent === habForm.emoji));
+  $$('#hab-color-picker .color-opt').forEach((b) => b.classList.toggle('sel', b.dataset.color === habForm.color));
+  $$('#hab-freq-seg .seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.freq === habForm.freq));
+  $$('#hab-unit-seg .seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.unit === habForm.unit));
+  const per = habForm.freq === 'weekly' ? 'week' : 'day';
+  $('#hab-target-hint').textContent = `${UNIT_CFG[habForm.unit].noun} per ${per}`;
+  $('#hab-target-val').textContent = targetText();
+}
+
+function openHabitForm(habit) {
+  editingHabitId = habit ? habit.id : null;
+  $('#hab-form-title').textContent = habit ? 'Edit Habit' : 'New Habit';
+  $('#hab-save').textContent = habit ? 'Save Changes' : 'Save Habit';
+  $('#hab-name').value = habit ? habit.name : '';
+  habForm.emoji = habit ? habit.emoji : HAB_EMOJIS[0];
+  habForm.color = habit ? habit.color : HAB_COLORS[0];
+  habForm.freq = habit ? habit.freqType : 'daily';
+  habForm.unit = habit ? habit.unit : 'count';
+  applyUnitToSlider();
+  $('#hab-target').value = habit ? habit.target : (habForm.unit === 'minutes' ? 30 : 1);
+  syncHabitForm();
+  $('#hab-form').classList.remove('hidden');
+  $('#hab-name').focus();
+  $('#hab-form').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+$$('#hab-freq-seg .seg-btn').forEach((b) => b.addEventListener('click', () => { habForm.freq = b.dataset.freq; syncHabitForm(); }));
+$$('#hab-unit-seg .seg-btn').forEach((b) => b.addEventListener('click', () => { habForm.unit = b.dataset.unit; applyUnitToSlider(); syncHabitForm(); }));
+$('#hab-target').addEventListener('input', () => { $('#hab-target-val').textContent = targetText(); });
+
+$('#hab-add-btn').addEventListener('click', () => {
+  const form = $('#hab-form');
+  if (form.classList.contains('hidden')) openHabitForm(null);
+  else { form.classList.add('hidden'); editingHabitId = null; }
+});
+$('#hab-cancel').addEventListener('click', () => { $('#hab-form').classList.add('hidden'); editingHabitId = null; });
+
+$('#hab-save').addEventListener('click', async () => {
+  const name = $('#hab-name').value.trim();
+  if (!name) { toast('Please name the habit', true); return; }
+  const payload = {
+    name,
+    emoji: habForm.emoji,
+    color: habForm.color,
+    freqType: habForm.freq,
+    unit: habForm.unit,
+    target: parseInt($('#hab-target').value, 10)
+  };
+  if (editingHabitId) { await api.updateHabit(editingHabitId, payload); toast('Habit updated'); }
+  else { await api.addHabit(payload); toast('Habit created 🌱'); }
+  $('#hab-form').classList.add('hidden');
+  editingHabitId = null;
+  loadHabits();
+});
+
 // ---------- live updates ----------
 api.onTick((p) => {
   // keep the hero counter & current app fresh without a full reload
@@ -858,6 +1206,7 @@ function escapeHtml(s) {
 }
 
 // ---------- boot ----------
+buildHabitPickers();
 go('dashboard');
 api.getSettings().then((s) => applyStudyUI(!!s.studyMode));
 setInterval(() => { if (!$('#page-dashboard').classList.contains('hidden')) loadDashboard(); }, 30000);

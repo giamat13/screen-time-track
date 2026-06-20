@@ -13,6 +13,7 @@ function defaults() {
     goals: {}, // { appName: targetSeconds }
     globalLimit: 0, // total daily screen-time cap across all apps (seconds); 0 = off
     reminders: [], // [{ id, time: 'HH:MM', message, enabled }]
+    habits: [], // [{ id, name, emoji, color, freqType: 'daily'|'weekly', target, createdAt, log: { 'YYYY-MM-DD': count } }]
     streaks: { current: 0, best: 0, lastCheckedDate: null, metDays: {}, freezers: 5, frozenDays: {} },
     settings: {
       tracking: true,
@@ -53,6 +54,7 @@ function load() {
       data.goals = parsed.goals || {};
       data.globalLimit = parsed.globalLimit || 0;
       data.reminders = parsed.reminders || [];
+      data.habits = parsed.habits || [];
       if (parsed.streaks) {
         data.streaks = Object.assign(defaults().streaks, parsed.streaks);
         data.streaks.metDays = parsed.streaks.metDays || {};
@@ -229,13 +231,15 @@ function syncStreaks() {
   if (!data.streaks.metDays) data.streaks.metDays = {};
   const today = dateKey();
   const goals = data.goals || {};
-  const active = Object.keys(goals).length > 0 || (data.globalLimit || 0) > 0;
+  // Habits now feed the same streak as screen-time goals, so the streak is active when
+  // either is configured.
+  const active = Object.keys(goals).length > 0 || (data.globalLimit || 0) > 0 || habitsConfigured();
   if (active) {
     // Re-evaluate the last 30 days so the calendar stays current
     for (let i = 30; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
-      data.streaks.metDays[dateKey(d)] = checkGoalsMet(dateKey(d));
+      data.streaks.metDays[dateKey(d)] = checkDayMet(dateKey(d));
     }
   }
 
@@ -325,6 +329,318 @@ function deleteReminder(id) {
   return data.reminders;
 }
 
+// ---------- habits ----------
+// Habits are user-defined recurring actions, measured either by count ("Drink water
+// 8×/day") or by time ("Read 30 min/day"). Every completion is stored as a timestamped
+// entry; the daily/weekly aggregates, streaks, XP, levels and hour-of-day stats are all
+// derived from those entries so nothing can drift out of sync. Manual entries can be
+// backdated to a chosen day & time, which feeds both the per-habit and main streak.
+const HABIT_XP_PER_UNIT = { count: 10, minutes: 1 };
+const HABIT_TARGET_MAX = { count: 50, minutes: 1440 };
+
+// Cumulative XP needed grows by a fixed step each level, giving a gentle ramp:
+// L2 @ 50xp, L3 @ 125, L4 @ 225, L5 @ 350 …
+function levelFromXp(xp) {
+  let level = 1, acc = 0, need = 50;
+  while (xp >= acc + need) { acc += need; level++; need += 25; }
+  return { level, xpInto: xp - acc, xpForNext: need };
+}
+
+// Sunday-anchored start of the week containing `d`.
+function weekStart(d = new Date()) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  x.setDate(x.getDate() - x.getDay());
+  return x;
+}
+
+// Longest run of consecutive met periods. `keys` are date strings (day for daily,
+// week-start for weekly); `stepDays` is the spacing that counts as "consecutive".
+function bestRun(keys, stepDays) {
+  const sorted = [...keys].sort();
+  let best = 0, cur = 0, prev = null;
+  for (const k of sorted) {
+    const d = new Date(k + 'T00:00:00');
+    if (prev && Math.round((d - prev) / 86400000) === stepDays) cur++;
+    else cur = 1;
+    if (cur > best) best = cur;
+    prev = d;
+  }
+  return best;
+}
+
+function habitUnit(h) { return h.unit === 'minutes' ? 'minutes' : 'count'; }
+function clampTarget(unit, v) { return Math.max(1, Math.min(HABIT_TARGET_MAX[unit] || 50, parseInt(v, 10) || 1)); }
+
+// Migrate any legacy day-count `log` into the timestamped `entries` model (one entry
+// per day at noon), then return the entries array (the single source of truth).
+function habitEntries(h) {
+  if (!Array.isArray(h.entries)) {
+    const e = [];
+    if (h.log && typeof h.log === 'object') {
+      for (const [day, amt] of Object.entries(h.log)) {
+        if (amt > 0) e.push({ ts: `${day}T12:00:00.000`, amount: amt });
+      }
+    }
+    h.entries = e;
+    delete h.log;
+  }
+  return h.entries;
+}
+
+// Sum entries per calendar day -> { 'YYYY-MM-DD': totalAmount }.
+function dayMapOf(h) {
+  const map = {};
+  for (const en of habitEntries(h)) {
+    const k = dateKey(new Date(en.ts));
+    map[k] = (map[k] || 0) + (en.amount || 0);
+  }
+  return map;
+}
+
+function dailyStreakMap(map, target) {
+  let streak = 0;
+  for (let i = 0; i < 366; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const c = map[dateKey(d)] || 0;
+    if (c >= target) streak++;
+    else if (i === 0) continue; // today still in progress — don't break the streak yet
+    else break;
+  }
+  return streak;
+}
+
+function weekSumMap(map, ws) {
+  let sum = 0;
+  for (let j = 0; j < 7; j++) {
+    const d = new Date(ws);
+    d.setDate(d.getDate() + j);
+    sum += map[dateKey(d)] || 0;
+  }
+  return sum;
+}
+
+function weeklyStreakMap(map, target) {
+  let streak = 0;
+  for (let i = 0; i < 260; i++) {
+    const ws = weekStart();
+    ws.setDate(ws.getDate() - i * 7);
+    if (weekSumMap(map, ws) >= target) streak++;
+    else if (i === 0) continue; // current week still in progress
+    else break;
+  }
+  return streak;
+}
+
+// Decorate a stored habit with all derived stats the UI needs.
+function enrichHabit(h) {
+  const unit = habitUnit(h);
+  const target = clampTarget(unit, h.target);
+  const today = dateKey();
+  const weekly = h.freqType === 'weekly';
+  const map = dayMapOf(h);
+  const entries = habitEntries(h);
+
+  let totalDone = 0;
+  for (const v of Object.values(map)) totalDone += v;
+
+  let periodCount, streak, best;
+  if (weekly) {
+    periodCount = weekSumMap(map, weekStart());
+    streak = weeklyStreakMap(map, target);
+    const metWeeks = [];
+    for (let i = 0; i < 260; i++) {
+      const ws = weekStart();
+      ws.setDate(ws.getDate() - i * 7);
+      if (weekSumMap(map, ws) >= target) metWeeks.push(dateKey(ws));
+    }
+    best = bestRun(metWeeks, 7);
+  } else {
+    periodCount = map[today] || 0;
+    streak = dailyStreakMap(map, target);
+    best = bestRun(Object.keys(map).filter((k) => map[k] >= target), 1);
+  }
+
+  const xp = Math.round(totalDone * HABIT_XP_PER_UNIT[unit]);
+  const lvl = levelFromXp(xp);
+
+  // last 14 days of activity for the mini-calendar / heatmap strip
+  const history = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const k = dateKey(d);
+    const c = map[k] || 0;
+    history.push({ date: k, count: c, met: c >= target, dow: d.getDay() });
+  }
+
+  // hour-of-day distribution: when do completions actually happen?
+  const hours = new Array(24).fill(0);
+  for (const en of entries) hours[new Date(en.ts).getHours()] += en.amount || 0;
+  let peakHour = -1, peakVal = 0;
+  hours.forEach((v, i) => { if (v > peakVal) { peakVal = v; peakHour = i; } });
+
+  return {
+    id: h.id,
+    name: h.name,
+    emoji: h.emoji,
+    color: h.color,
+    freqType: weekly ? 'weekly' : 'daily',
+    unit,
+    target,
+    createdAt: h.createdAt,
+    todayCount: map[today] || 0,
+    periodCount,
+    periodTarget: target,
+    periodDone: periodCount >= target,
+    streak,
+    bestStreak: Math.max(best, streak),
+    totalDone,
+    entryCount: entries.length,
+    xp,
+    level: lvl.level,
+    xpInto: lvl.xpInto,
+    xpForNext: lvl.xpForNext,
+    history,
+    hours,
+    peakHour
+  };
+}
+
+function getHabits() {
+  return (data.habits || []).map(enrichHabit);
+}
+
+function addHabit(h) {
+  if (!data.habits) data.habits = [];
+  const unit = h.unit === 'minutes' ? 'minutes' : 'count';
+  const habit = {
+    id: h.id || (Date.now().toString(36) + Math.random().toString(36).slice(2)),
+    name: (h.name || 'Habit').toString().slice(0, 60),
+    emoji: h.emoji || '✅',
+    color: h.color || '#2e9bff',
+    freqType: h.freqType === 'weekly' ? 'weekly' : 'daily',
+    unit,
+    target: clampTarget(unit, h.target),
+    createdAt: new Date().toISOString(),
+    entries: []
+  };
+  data.habits.push(habit);
+  flush();
+  return enrichHabit(habit);
+}
+
+function updateHabit(id, partial) {
+  const h = (data.habits || []).find((x) => x.id === id);
+  if (!h) return null;
+  partial = partial || {};
+  if (partial.name != null) h.name = String(partial.name).slice(0, 60);
+  if (partial.emoji != null) h.emoji = partial.emoji;
+  if (partial.color != null) h.color = partial.color;
+  if (partial.freqType != null) h.freqType = partial.freqType === 'weekly' ? 'weekly' : 'daily';
+  if (partial.unit != null) h.unit = partial.unit === 'minutes' ? 'minutes' : 'count';
+  if (partial.target != null) h.target = clampTarget(habitUnit(h), partial.target);
+  flush();
+  return enrichHabit(h);
+}
+
+function deleteHabit(id) {
+  data.habits = (data.habits || []).filter((x) => x.id !== id);
+  flush();
+  return getHabits();
+}
+
+// Record a completion. `amount` > 0 adds it; < 0 undoes that much from today.
+// `when` (optional) = { date: 'YYYY-MM-DD', time: 'HH:MM' } to backdate the entry for
+// statistics; omitted means "now".
+function logHabit(id, amount = 1, when = null) {
+  const h = (data.habits || []).find((x) => x.id === id);
+  if (!h) return null;
+  const entries = habitEntries(h);
+  amount = Number(amount) || 0;
+
+  if (amount > 0) {
+    let ts;
+    if (when && when.date) {
+      const time = (when.time && /^\d{2}:\d{2}$/.test(when.time)) ? when.time : '12:00';
+      ts = new Date(`${when.date}T${time}:00`).toISOString();
+    } else {
+      ts = new Date().toISOString();
+    }
+    entries.push({ ts, amount });
+  } else if (amount < 0) {
+    // Undo: peel `-amount` off today's most recent entries.
+    let remove = -amount;
+    const today = dateKey();
+    for (let i = entries.length - 1; i >= 0 && remove > 0; i--) {
+      if (dateKey(new Date(entries[i].ts)) !== today) continue;
+      if (entries[i].amount <= remove) { remove -= entries[i].amount; entries.splice(i, 1); }
+      else { entries[i].amount -= remove; remove = 0; }
+    }
+  }
+  flush();
+  return enrichHabit(h);
+}
+
+// ---- main-streak unification ----
+// Daily habits are strict: a past day fails if any daily habit that existed then was
+// not fully met. Weekly habits are judged once, on the Saturday that closes their week.
+// The current (in-progress) day/week is never marked as failed — only "pending".
+// A day obligates a habit if the habit already existed then, OR there is a logged
+// entry on that day (so backdated completions count, but creating a habit never
+// retroactively fails the days before you started it).
+function dailyHabitsState(key) {
+  const dailies = (data.habits || []).filter((h) => h.freqType === 'daily');
+  if (!dailies.length) return 'na';
+  const today = dateKey();
+  let any = false, allMet = true;
+  for (const h of dailies) {
+    const map = dayMapOf(h);
+    const created = h.createdAt ? dateKey(new Date(h.createdAt)) : key;
+    if (key < created && !(map[key] > 0)) continue; // didn't exist yet and nothing logged
+    any = true;
+    if ((map[key] || 0) < clampTarget(habitUnit(h), h.target)) allMet = false;
+  }
+  if (!any) return 'na';
+  if (allMet) return true;
+  return key >= today ? 'pending' : false; // today still in progress => not a miss yet
+}
+
+function weeklyHabitsState(key) {
+  const d = new Date(key + 'T00:00:00');
+  if (d.getDay() !== 6) return 'na';                 // only Saturday represents its week
+  const ws = weekStart(d);
+  if (dateKey(weekStart()) === dateKey(ws)) return 'na'; // current week not finished
+  const weeklies = (data.habits || []).filter((h) => h.freqType === 'weekly');
+  const wsKey = dateKey(ws);
+  let any = false;
+  for (const h of weeklies) {
+    const created = h.createdAt ? dateKey(new Date(h.createdAt)) : key;
+    const sum = weekSumMap(dayMapOf(h), ws);
+    if (wsKey < created && !(sum > 0)) continue; // habit didn't exist that week, nothing logged
+    any = true;
+    if (sum < clampTarget(habitUnit(h), h.target)) return false;
+  }
+  return any ? true : 'na';
+}
+
+// Combine screen-time goals + daily habits + weekly-habit week-ends into one verdict.
+// false beats everything (a real miss); a still-pending piece keeps the day neutral.
+function checkDayMet(key) {
+  const goals = checkGoalsMet(key); // null | true | false
+  const states = [goals === null ? 'na' : goals, dailyHabitsState(key), weeklyHabitsState(key)];
+  const real = states.filter((s) => s !== 'na');
+  if (!real.length) return null;
+  if (real.some((s) => s === false)) return false;
+  if (real.some((s) => s === 'pending')) return null;
+  return true;
+}
+
+function habitsConfigured() {
+  return (data.habits || []).length > 0;
+}
+
 function getSettings() { return data.settings; }
 function setSettings(partial) {
   partial = partial || {};
@@ -360,5 +676,10 @@ module.exports = {
   getReminders,
   setReminder,
   deleteReminder,
+  getHabits,
+  addHabit,
+  updateHabit,
+  deleteHabit,
+  logHabit,
   raw: () => data
 };

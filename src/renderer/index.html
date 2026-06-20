@@ -31,6 +31,7 @@
         <button class="nav-item" data-page="breaks"><span class="ico">&#9200;</span><span class="lbl">Breaks</span></button>
         <button class="nav-item" data-page="goals"><span class="ico">&#127919;</span><span class="lbl">Goals</span></button>
         <button class="nav-item" data-page="streak"><span class="ico">&#128293;</span><span class="lbl">Streak</span></button>
+        <button class="nav-item" data-page="habits"><span class="ico">&#127793;</span><span class="lbl">Habits</span></button>
         <button class="nav-item" data-page="reminders"><span class="ico">&#128276;</span><span class="lbl">Reminders</span></button>
       </div>
       <button class="nav-item nav-settings" data-page="settings"><span class="ico">&#9881;</span><span class="lbl">Settings</span></button>
@@ -379,6 +380,102 @@
             <div class="streak-calendar" id="streak-calendar"></div>
           </div>
         </div>
+
+        <div class="card" id="streak-habits-card">
+          <div class="card-head">
+            <h3>Counts Toward Your Streak</h3>
+            <span class="subtle small">Finish these to keep today green</span>
+          </div>
+          <div id="streak-habits-list"></div>
+        </div>
+      </section>
+
+      <!-- ============ HABITS ============ -->
+      <section class="page hidden" id="page-habits">
+        <div class="page-head">
+          <div>
+            <h1>Habits</h1>
+            <p class="subtle">Build routines, log every rep, and level up</p>
+          </div>
+          <button class="btn primary" id="hab-add-btn" style="padding:9px 18px">+ New Habit</button>
+        </div>
+
+        <!-- Summary stats -->
+        <div class="cards-row" id="hab-summary">
+          <div class="card stat">
+            <div class="stat-ico c-violet">&#127793;</div>
+            <div class="stat-val" id="hab-s-count">0</div>
+            <div class="stat-lbl">Active Habits</div>
+          </div>
+          <div class="card stat">
+            <div class="stat-ico c-green" style="background:rgba(52,211,153,.14);color:var(--green)">&#10003;</div>
+            <div class="stat-val" id="hab-s-done">0</div>
+            <div class="stat-lbl">Done This Period</div>
+          </div>
+          <div class="card stat">
+            <div class="stat-ico c-amber">&#128293;</div>
+            <div class="stat-val" id="hab-s-streak">0</div>
+            <div class="stat-lbl">Best Active Streak</div>
+          </div>
+          <div class="card stat">
+            <div class="stat-ico c-blue">&#9733;</div>
+            <div class="stat-val" id="hab-s-level">0</div>
+            <div class="stat-lbl">Total Levels</div>
+          </div>
+        </div>
+
+        <!-- Add / edit form -->
+        <div class="card hidden" id="hab-form">
+          <div class="card-head"><h3 id="hab-form-title">New Habit</h3></div>
+          <div class="setting" style="flex-direction:column;align-items:flex-start;gap:8px">
+            <div class="set-title">Name</div>
+            <input type="text" id="hab-name" class="text-input" placeholder="e.g. Read, Workout, Drink water" maxlength="60" />
+          </div>
+          <div class="setting" style="flex-direction:column;align-items:flex-start;gap:10px">
+            <div class="set-title">Icon</div>
+            <div class="emoji-picker" id="hab-emoji-picker"></div>
+          </div>
+          <div class="setting" style="flex-direction:column;align-items:flex-start;gap:10px">
+            <div class="set-title">Color</div>
+            <div class="color-picker" id="hab-color-picker"></div>
+          </div>
+          <div class="setting">
+            <div>
+              <div class="set-title">Measure by</div>
+              <div class="subtle">Count repetitions, or track time spent</div>
+            </div>
+            <div class="seg" id="hab-unit-seg">
+              <button class="seg-btn active" data-unit="count">Times</button>
+              <button class="seg-btn" data-unit="minutes">Minutes</button>
+            </div>
+          </div>
+          <div class="setting">
+            <div>
+              <div class="set-title">Frequency</div>
+              <div class="subtle">How the goal is counted</div>
+            </div>
+            <div class="seg" id="hab-freq-seg">
+              <button class="seg-btn active" data-freq="daily">Per day</button>
+              <button class="seg-btn" data-freq="weekly">Per week</button>
+            </div>
+          </div>
+          <div class="setting">
+            <div>
+              <div class="set-title">Target</div>
+              <div class="subtle" id="hab-target-hint">Times per day</div>
+            </div>
+            <div class="slider-ctrl">
+              <input type="range" id="hab-target" min="1" max="20" step="1" value="1" />
+              <span class="slider-val" id="hab-target-val">1×</span>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+            <button class="btn ghost" id="hab-cancel">Cancel</button>
+            <button class="btn primary" id="hab-save">Save Habit</button>
+          </div>
+        </div>
+
+        <div id="hab-list"></div>
       </section>
 
       <!-- ============ REMINDERS ============ -->
@@ -447,6 +544,17 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
+
+  <!-- Habit level-up celebration -->
+  <div id="levelup" class="levelup hidden">
+    <div class="levelup-card">
+      <div class="levelup-confetti" id="levelup-confetti"></div>
+      <div class="levelup-emoji" id="levelup-emoji">&#127881;</div>
+      <div class="levelup-title">Level Up!</div>
+      <div class="levelup-sub" id="levelup-sub">Reading reached level 3</div>
+    </div>
+  </div>
+
   <script src="renderer.js"></script>
 </body>
 </html>

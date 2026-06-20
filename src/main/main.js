@@ -363,6 +363,12 @@ function setupIpc() {
   ipcMain.handle('reminders:set', (_e, r) => store.setReminder(r));
   ipcMain.handle('reminders:delete', (_e, id) => store.deleteReminder(id));
 
+  ipcMain.handle('habits:get', () => store.getHabits());
+  ipcMain.handle('habits:add', (_e, h) => store.addHabit(h));
+  ipcMain.handle('habits:update', (_e, id, partial) => store.updateHabit(id, partial));
+  ipcMain.handle('habits:delete', (_e, id) => store.deleteHabit(id));
+  ipcMain.handle('habits:log', (_e, id, amount, when) => store.logHabit(id, amount, when));
+
   ipcMain.handle('win:control', (_e, action) => {
     if (!win) return;
     if (action === 'minimize') win.minimize();

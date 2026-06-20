@@ -27,6 +27,12 @@ contextBridge.exposeInMainWorld('api', {
   setReminder: (r) => ipcRenderer.invoke('reminders:set', r),
   deleteReminder: (id) => ipcRenderer.invoke('reminders:delete', id),
 
+  getHabits: () => ipcRenderer.invoke('habits:get'),
+  addHabit: (h) => ipcRenderer.invoke('habits:add', h),
+  updateHabit: (id, partial) => ipcRenderer.invoke('habits:update', id, partial),
+  deleteHabit: (id) => ipcRenderer.invoke('habits:delete', id),
+  logHabit: (id, amount, when) => ipcRenderer.invoke('habits:log', id, amount, when),
+
   onTick: (cb) => ipcRenderer.on('tick', (_e, d) => cb(d)),
   onTrackingChanged: (cb) => ipcRenderer.on('tracking-changed', (_e, d) => cb(d)),
   onBreakPrompt: (cb) => ipcRenderer.on('break-prompt', (_e, d) => cb(d)),
