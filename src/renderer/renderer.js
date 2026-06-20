@@ -573,7 +573,7 @@ function renderStreak(streaks) {
   $('#streak-current').textContent = current;
   $('#streak-best').textContent = best;
   $('#streak-freezers').textContent = freezers;
-  $('#streak-freezer-hint').textContent = `(earn 1 every 4 days — saves a broken streak)`;
+  $('#streak-freezer-hint').textContent = `(earn 1 every 3 days — saves a broken streak)`;
   const flame = $('#flame-icon');
   if (current === 0) flame.classList.add('cold'); else flame.classList.remove('cold');
   const msgs = ['Start a streak by meeting your goals today!', 'Great start — keep it going!', 'On a roll!', 'Impressive consistency!', 'Unstoppable!'];
