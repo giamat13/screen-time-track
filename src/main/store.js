@@ -55,10 +55,22 @@ function load() {
       data.goals = parsed.goals || {};
       data.globalLimit = parsed.globalLimit || 0;
       data.goalsSnapshots = parsed.goalsSnapshots || [];
-      // Migrate: if no snapshots exist yet, seed one from the current goals
+      // Migrate: if no snapshots exist yet, seed one from the current goals.
+      // Use today as the effectiveDate so past days without goals aren't counted.
       if (!data.goalsSnapshots.length && (Object.keys(data.goals).length || data.globalLimit)) {
-        const effectiveDate = data.installedAt ? data.installedAt.split('T')[0] : '2020-01-01';
-        data.goalsSnapshots = [{ effectiveDate, goals: Object.assign({}, data.goals), globalLimit: data.globalLimit }];
+        data.goalsSnapshots = [{ effectiveDate: dateKey(), goals: Object.assign({}, data.goals), globalLimit: data.globalLimit || 0 }];
+      }
+      // One-time fix: old migration used installedAt as effectiveDate, which retroactively
+      // applied goals to days before they were set and inflated the streak.
+      // Detect the pattern: single snapshot whose date matches installedAt (not today).
+      if (
+        data.goalsSnapshots.length === 1 &&
+        data.installedAt &&
+        data.goalsSnapshots[0].effectiveDate === data.installedAt.split('T')[0] &&
+        data.goalsSnapshots[0].effectiveDate < dateKey()
+      ) {
+        data.goalsSnapshots[0].effectiveDate = dateKey();
+        data.streaks = defaults().streaks;
       }
       data.reminders = parsed.reminders || [];
       data.habits = parsed.habits || [];
@@ -275,6 +287,13 @@ function syncStreaks() {
     }
   }
 
+  // Trim metDays to a 90-day rolling window so stale entries from old goals/habits
+  // don't inflate the streak or best count.
+  const cutoff = dateKey(new Date(Date.now() - 90 * 86400000));
+  for (const k of Object.keys(data.streaks.metDays)) {
+    if (k < cutoff) delete data.streaks.metDays[k];
+  }
+
   // Forward-simulate from the oldest evaluated day to today so freezers
   // accrue and get spent deterministically.
   const keys = Object.keys(data.streaks.metDays).sort();
@@ -302,7 +321,7 @@ function syncStreaks() {
   data.streaks.current = streak;
   data.streaks.freezers = freezers;
   data.streaks.frozenDays = frozen;
-  if (best > (data.streaks.best || 0)) data.streaks.best = best;
+  data.streaks.best = best;
   data.streaks.lastCheckedDate = today;
 }
 
