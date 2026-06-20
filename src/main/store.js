@@ -12,6 +12,7 @@ function defaults() {
     days: {}, // 'YYYY-MM-DD' -> { apps: { name: seconds }, total, firstSeen, lastSeen }
     goals: {}, // { appName: targetSeconds }
     globalLimit: 0, // total daily screen-time cap across all apps (seconds); 0 = off
+    goalsSnapshots: [], // [{ effectiveDate: 'YYYY-MM-DD', goals: {...}, globalLimit: N }]
     reminders: [], // [{ id, time: 'HH:MM', message, enabled }]
     habits: [], // [{ id, name, emoji, color, freqType: 'daily'|'weekly', target, createdAt, log: { 'YYYY-MM-DD': count } }]
     streaks: { current: 0, best: 0, lastCheckedDate: null, metDays: {}, freezers: 5, frozenDays: {} },
@@ -53,6 +54,12 @@ function load() {
       data.days = parsed.days || {};
       data.goals = parsed.goals || {};
       data.globalLimit = parsed.globalLimit || 0;
+      data.goalsSnapshots = parsed.goalsSnapshots || [];
+      // Migrate: if no snapshots exist yet, seed one from the current goals
+      if (!data.goalsSnapshots.length && (Object.keys(data.goals).length || data.globalLimit)) {
+        const effectiveDate = data.installedAt ? data.installedAt.split('T')[0] : '2020-01-01';
+        data.goalsSnapshots = [{ effectiveDate, goals: Object.assign({}, data.goals), globalLimit: data.globalLimit }];
+      }
       data.reminders = parsed.reminders || [];
       data.habits = parsed.habits || [];
       if (parsed.streaks) {
@@ -193,6 +200,31 @@ function dayTotal(offset = 0) {
 
 function getGoals() { return data.goals || {}; }
 
+// Record current goals + globalLimit as a snapshot effective today.
+// If today already has a snapshot, update it in place.
+function recordGoalsSnapshot() {
+  if (!data.goalsSnapshots) data.goalsSnapshots = [];
+  const today = dateKey();
+  const existing = data.goalsSnapshots.find((s) => s.effectiveDate === today);
+  if (existing) {
+    existing.goals = Object.assign({}, data.goals);
+    existing.globalLimit = data.globalLimit || 0;
+  } else {
+    data.goalsSnapshots.push({ effectiveDate: today, goals: Object.assign({}, data.goals), globalLimit: data.globalLimit || 0 });
+  }
+}
+
+// Return the goals and globalLimit that were in effect on a given day.
+function getGoalsForDate(key) {
+  const snapshots = data.goalsSnapshots || [];
+  const applicable = snapshots
+    .filter((s) => s.effectiveDate <= key)
+    .sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate))[0];
+  if (applicable) return { goals: applicable.goals || {}, globalLimit: applicable.globalLimit || 0 };
+  // No snapshot predates this key — no goals were active
+  return { goals: {}, globalLimit: 0 };
+}
+
 function setGoal(appName, targetSeconds) {
   if (!data.goals) data.goals = {};
   if (!targetSeconds || targetSeconds <= 0) {
@@ -200,13 +232,13 @@ function setGoal(appName, targetSeconds) {
   } else {
     data.goals[appName] = Math.round(targetSeconds);
   }
+  recordGoalsSnapshot();
   flush();
   return data.goals;
 }
 
 function checkGoalsMet(key) {
-  const goals = data.goals || {};
-  const globalLimit = data.globalLimit || 0;
+  const { goals, globalLimit } = getGoalsForDate(key);
   if (Object.keys(goals).length === 0 && !globalLimit) return null; // nothing to enforce
   const day = data.days[key];
   if (!day) return null; // no tracking that day => neutral, doesn't count toward the streak
@@ -278,6 +310,7 @@ function getGlobalLimit() { return data.globalLimit || 0; }
 
 function setGlobalLimit(seconds) {
   data.globalLimit = (!seconds || seconds <= 0) ? 0 : Math.round(seconds);
+  recordGoalsSnapshot();
   flush();
   return data.globalLimit;
 }

@@ -483,6 +483,17 @@ input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 3
 
 .hab-peak { font-size: 12px; color: var(--muted); }
 
+/* streak-page: goals that feed the streak */
+.streak-goal-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
+.streak-goal-row:last-child { border-bottom: none; }
+.sg-icon { width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; background: rgba(46,155,255,.13); flex-shrink: 0; }
+.sg-name { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sg-prog { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.sg-prog.over { color: var(--red, #f87171); }
+.sg-check { width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--border); color: var(--muted-2); display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+.sg-check.done { background: rgba(52,211,153,.18); border-color: var(--green); color: var(--green); font-weight: 700; }
+.sg-check.fail { background: rgba(248,113,113,.15); border-color: var(--red, #f87171); color: var(--red, #f87171); font-weight: 700; }
+
 /* streak-page: habits that feed the streak */
 .streak-habit-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
 .streak-habit-row:last-child { border-bottom: none; }

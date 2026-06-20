@@ -556,9 +556,44 @@ async function loadGoals() {
   globalLimit = gLimit || 0;
   renderGlobalLimit(dash);
   renderStreak(streaks);
+  renderStreakGoals(goals, dash, gLimit);
   renderStreakHabits(habits);
   renderWeeklyReport(weekly);
   renderGoalsList(goals, dash);
+}
+
+// Shown on the Streak page: screen-time goals so the user can see what's still needed today.
+function renderStreakGoals(goals, dash, gLimit) {
+  const card = $('#streak-goals-card');
+  const list = $('#streak-goals-list');
+  if (!card || !list) return;
+  const hasGoals = Object.keys(goals).length > 0 || gLimit > 0;
+  if (!hasGoals) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  list.innerHTML = '';
+  const apps = (dash && dash.apps) || {};
+  const studyApps = (dash && dash.studyApps) || {};
+
+  const makeRow = (name, icon, used, limit) => {
+    const met = used <= limit;
+    const row = document.createElement('div');
+    row.className = 'streak-goal-row';
+    row.innerHTML = `
+      <span class="sg-icon">${icon}</span>
+      <span class="sg-name">${escapeHtml(name)}</span>
+      <span class="sg-prog${met ? '' : ' over'}">${fmtShort(used)} / ${fmtShort(limit)}</span>
+      <span class="sg-check ${met ? 'done' : 'fail'}">${met ? '✓' : '✗'}</span>`;
+    list.appendChild(row);
+  };
+
+  if (gLimit > 0) {
+    const used = dash ? Math.max(0, (dash.total || 0) - (dash.studyTotal || 0)) : 0;
+    makeRow('Total screen time', '🖥️', used, gLimit);
+  }
+  Object.entries(goals).forEach(([appName, limitSec]) => {
+    const used = Math.max(0, ((apps[appName] || 0) - (studyApps[appName] || 0)));
+    makeRow(appName, '📱', used, limitSec);
+  });
 }
 
 // Shown on the Streak page: the habits that feed the unified streak, with today's /
