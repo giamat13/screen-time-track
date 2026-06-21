@@ -387,8 +387,8 @@ function deleteReminder(id) {
 // entry; the daily/weekly aggregates, streaks, XP, levels and hour-of-day stats are all
 // derived from those entries so nothing can drift out of sync. Manual entries can be
 // backdated to a chosen day & time, which feeds both the per-habit and main streak.
-const HABIT_XP_PER_UNIT = { count: 10, minutes: 1 };
-const HABIT_TARGET_MAX = { count: 50, minutes: 1440 };
+const HABIT_XP_PER_UNIT = { count: 10, minutes: 1, custom: 10 };
+const HABIT_TARGET_MAX = { count: 50, minutes: 1440, custom: 100 };
 
 // Cumulative XP needed grows by a fixed step each level, giving a gentle ramp:
 // L2 @ 50xp, L3 @ 125, L4 @ 225, L5 @ 350 …
@@ -421,8 +421,8 @@ function bestRun(keys, stepDays) {
   return best;
 }
 
-function habitUnit(h) { return h.unit === 'minutes' ? 'minutes' : 'count'; }
-function clampTarget(unit, v) { return Math.max(1, Math.min(HABIT_TARGET_MAX[unit] || 50, parseInt(v, 10) || 1)); }
+function habitUnit(h) { return h.unit === 'minutes' ? 'minutes' : h.unit === 'custom' ? 'custom' : 'count'; }
+function clampTarget(unit, v) { const n = parseInt(v, 10); return isNaN(n) ? 1 : Math.max(0, Math.min(HABIT_TARGET_MAX[unit] || 50, n)); }
 
 // Migrate any legacy day-count `log` into the timestamped `entries` model (one entry
 // per day at noon), then return the entries array (the single source of truth).
@@ -489,6 +489,8 @@ function weeklyStreakMap(map, target) {
 function enrichHabit(h) {
   const unit = habitUnit(h);
   const target = clampTarget(unit, h.target);
+  const trackOnly = target === 0; // no goal — just log freely
+  const effectiveTarget = trackOnly ? 1 : target; // for streak/met calculations
   const today = dateKey();
   const weekly = h.freqType === 'weekly';
   const map = dayMapOf(h);
@@ -500,18 +502,18 @@ function enrichHabit(h) {
   let periodCount, streak, best;
   if (weekly) {
     periodCount = weekSumMap(map, weekStart());
-    streak = weeklyStreakMap(map, target);
+    streak = weeklyStreakMap(map, effectiveTarget);
     const metWeeks = [];
     for (let i = 0; i < 260; i++) {
       const ws = weekStart();
       ws.setDate(ws.getDate() - i * 7);
-      if (weekSumMap(map, ws) >= target) metWeeks.push(dateKey(ws));
+      if (weekSumMap(map, ws) >= effectiveTarget) metWeeks.push(dateKey(ws));
     }
     best = bestRun(metWeeks, 7);
   } else {
     periodCount = map[today] || 0;
-    streak = dailyStreakMap(map, target);
-    best = bestRun(Object.keys(map).filter((k) => map[k] >= target), 1);
+    streak = dailyStreakMap(map, effectiveTarget);
+    best = bestRun(Object.keys(map).filter((k) => map[k] >= effectiveTarget), 1);
   }
 
   const xp = Math.round(totalDone * HABIT_XP_PER_UNIT[unit]);
@@ -524,7 +526,7 @@ function enrichHabit(h) {
     d.setDate(d.getDate() - i);
     const k = dateKey(d);
     const c = map[k] || 0;
-    history.push({ date: k, count: c, met: c >= target, dow: d.getDay() });
+    history.push({ date: k, count: c, met: trackOnly ? c > 0 : c >= target, dow: d.getDay() });
   }
 
   // hour-of-day distribution: when do completions actually happen?
@@ -540,12 +542,14 @@ function enrichHabit(h) {
     color: h.color,
     freqType: weekly ? 'weekly' : 'daily',
     unit,
+    customUnit: h.customUnit,
     target,
+    trackOnly,
     createdAt: h.createdAt,
     todayCount: map[today] || 0,
     periodCount,
     periodTarget: target,
-    periodDone: periodCount >= target,
+    periodDone: trackOnly ? periodCount > 0 : periodCount >= target,
     streak,
     bestStreak: Math.max(best, streak),
     totalDone,
@@ -566,7 +570,7 @@ function getHabits() {
 
 function addHabit(h) {
   if (!data.habits) data.habits = [];
-  const unit = h.unit === 'minutes' ? 'minutes' : 'count';
+  const unit = h.unit === 'minutes' ? 'minutes' : h.unit === 'custom' ? 'custom' : 'count';
   const habit = {
     id: h.id || (Date.now().toString(36) + Math.random().toString(36).slice(2)),
     name: (h.name || 'Habit').toString().slice(0, 60),
@@ -574,6 +578,7 @@ function addHabit(h) {
     color: h.color || '#2e9bff',
     freqType: h.freqType === 'weekly' ? 'weekly' : 'daily',
     unit,
+    customUnit: unit === 'custom' ? (String(h.customUnit || '').trim().slice(0, 20) || 'units') : undefined,
     target: clampTarget(unit, h.target),
     createdAt: new Date().toISOString(),
     entries: []
@@ -591,7 +596,8 @@ function updateHabit(id, partial) {
   if (partial.emoji != null) h.emoji = partial.emoji;
   if (partial.color != null) h.color = partial.color;
   if (partial.freqType != null) h.freqType = partial.freqType === 'weekly' ? 'weekly' : 'daily';
-  if (partial.unit != null) h.unit = partial.unit === 'minutes' ? 'minutes' : 'count';
+  if (partial.unit != null) h.unit = partial.unit === 'minutes' ? 'minutes' : partial.unit === 'custom' ? 'custom' : 'count';
+  if (partial.customUnit != null) h.customUnit = String(partial.customUnit).trim().slice(0, 20) || 'units';
   if (partial.target != null) h.target = clampTarget(habitUnit(h), partial.target);
   flush();
   return enrichHabit(h);
@@ -651,6 +657,7 @@ function dailyHabitsState(key) {
     const map = dayMapOf(h);
     const created = h.createdAt ? dateKey(new Date(h.createdAt)) : key;
     if (key < created && !(map[key] > 0)) continue; // didn't exist yet and nothing logged
+    if (clampTarget(habitUnit(h), h.target) === 0) continue; // track-only habit never blocks streak
     any = true;
     if ((map[key] || 0) < clampTarget(habitUnit(h), h.target)) allMet = false;
   }
@@ -671,6 +678,7 @@ function weeklyHabitsState(key) {
     const created = h.createdAt ? dateKey(new Date(h.createdAt)) : key;
     const sum = weekSumMap(dayMapOf(h), ws);
     if (wsKey < created && !(sum > 0)) continue; // habit didn't exist that week, nothing logged
+    if (clampTarget(habitUnit(h), h.target) === 0) continue; // track-only habit never blocks streak
     any = true;
     if (sum < clampTarget(habitUnit(h), h.target)) return false;
   }

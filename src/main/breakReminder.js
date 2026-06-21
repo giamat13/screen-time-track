@@ -128,7 +128,7 @@ class BreakReminder {
     }
 
     const idleThreshold = settings.idleThreshold || 120;
-    const idleSecs = this._pm.getSystemIdleTime();
+    const idleSecs = settings.studyMode ? 0 : this._pm.getSystemIdleTime();
     const now = Date.now();
     const elapsed = this._lastTickAt === null ? 0 : now - this._lastTickAt;
     this._lastTickAt = now;

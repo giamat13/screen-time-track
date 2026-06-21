@@ -606,7 +606,7 @@ function renderStreakHabits(habits) {
   card.classList.remove('hidden');
   list.innerHTML = '';
   habits.forEach((h) => {
-    const u = h.unit === 'minutes' ? 'm' : '';
+    const u = h.unit === 'minutes' ? 'm' : h.unit === 'custom' ? ` ${customUnitLabel(h)}` : '';
     const per = h.freqType === 'weekly' ? 'this week' : 'today';
     const row = document.createElement('div');
     row.className = 'streak-habit-row';
@@ -905,13 +905,14 @@ const HAB_COLORS = ['#2e9bff', '#a78bfa', '#34d399', '#f5a623', '#f472b6', '#38b
 
 // per-unit slider config (range, step, suffix)
 const UNIT_CFG = {
-  count: { min: 1, max: 20, step: 1, suffix: '×', noun: 'Times' },
-  minutes: { min: 5, max: 240, step: 5, suffix: 'm', noun: 'Minutes' }
+  count:   { min: 0, max: 20,  step: 1, suffix: '×', noun: 'Times' },
+  minutes: { min: 0, max: 240, step: 5, suffix: 'm', noun: 'Minutes' },
+  custom:  { min: 0, max: 100, step: 1, suffix: '',  noun: 'Amount' }
 };
 
 let habitLevels = {};   // id -> last seen level (to detect level-ups after a log)
 let editingHabitId = null;
-const habForm = { emoji: HAB_EMOJIS[0], color: HAB_COLORS[0], freq: 'daily', unit: 'count' };
+const habForm = { emoji: HAB_EMOJIS[0], color: HAB_COLORS[0], freq: 'daily', unit: 'count', customUnit: '' };
 
 async function loadHabits() {
   const habits = await api.getHabits();
@@ -921,8 +922,11 @@ async function loadHabits() {
 }
 
 function unitStep(h) { return h.unit === 'minutes' ? 5 : 1; }
+function customUnitLabel(h) { return (h.unit === 'custom' && h.customUnit) ? h.customUnit : (h.unit === 'minutes' ? 'min' : '×'); }
 function ringLabel(h) {
-  return h.unit === 'minutes' ? `Log +${unitStep(h)} min` : 'Log +1';
+  if (h.unit === 'minutes') return `Log +${unitStep(h)} min`;
+  if (h.unit === 'custom') return `Log +1 ${customUnitLabel(h)}`;
+  return 'Log +1';
 }
 function pad2(n) { return String(n).padStart(2, '0'); }
 
@@ -934,13 +938,16 @@ function renderHabitSummary(habits) {
 }
 
 function freqLabel(h) {
+  if (h.trackOnly) return 'Track only';
   const per = h.freqType === 'weekly' ? 'week' : 'day';
-  return h.unit === 'minutes' ? `${h.target} min / ${per}` : `${h.target}× per ${per}`;
+  if (h.unit === 'minutes') return `${h.target} min / ${per}`;
+  if (h.unit === 'custom') return `${h.target} ${customUnitLabel(h)} / ${per}`;
+  return `${h.target}× per ${per}`;
 }
 
 function historyStrip(h) {
   const todayK = rendDateKey(new Date());
-  const u = h.unit === 'minutes' ? 'm' : '×';
+  const u = h.unit === 'minutes' ? 'm' : h.unit === 'custom' ? ` ${customUnitLabel(h)}` : '×';
   return h.history.map((d) => {
     let cls = 'hh-cell';
     if (d.met) cls += ' met';
@@ -956,15 +963,20 @@ function habitCard(h) {
   const periodWord = h.freqType === 'weekly'
     ? (h.streak === 1 ? 'week' : 'weeks')
     : (h.streak === 1 ? 'day' : 'days');
-  const subUnit = h.unit === 'minutes' ? 'm' : '';
-  const ringInner = h.periodDone
-    ? '<span class="ring-check">✓</span>'
-    : `<span class="ring-count">${h.periodCount}</span><span class="ring-sub">/ ${h.periodTarget}${subUnit}</span>`;
+  const subUnit = h.unit === 'minutes' ? 'm' : h.unit === 'custom' ? ` ${customUnitLabel(h)}` : '';
+  const ringInner = h.trackOnly
+    ? (h.periodCount > 0
+        ? '<span class="ring-check">✓</span>'
+        : `<span class="ring-count">${h.periodCount}${subUnit}</span>`)
+    : h.periodDone
+      ? '<span class="ring-check">✓</span>'
+      : `<span class="ring-count">${h.periodCount}</span><span class="ring-sub">/ ${h.periodTarget}${subUnit}</span>`;
   const streakCls = h.streak > 0 ? 'streak-tag hot' : 'streak-tag cold';
   const peak = (h.peakHour >= 0 && h.entryCount >= 3)
     ? `<span class="hab-peak" title="When you usually log this">🕐 usually ${pad2(h.peakHour)}:00</span>` : '';
   const defAmt = h.unit === 'minutes' ? Math.min(h.target, 30) : 1;
   const stepAttr = h.unit === 'minutes' ? 5 : 1;
+  const hlpUnit = h.unit === 'minutes' ? 'min' : h.unit === 'custom' ? customUnitLabel(h) : '×';
 
   const card = document.createElement('div');
   card.className = 'habit-card' + (h.periodDone ? ' done' : '');
@@ -1005,7 +1017,7 @@ function habitCard(h) {
       <div class="hlp-row">
         <label class="hlp-lbl">Amount</label>
         <input type="number" class="hlp-amt" min="1" step="${stepAttr}" value="${defAmt}" />
-        <span class="hlp-unit">${h.unit === 'minutes' ? 'min' : '×'}</span>
+        <span class="hlp-unit">${hlpUnit}</span>
       </div>
       <div class="hlp-row">
         <label class="hlp-lbl">When</label>
@@ -1162,15 +1174,24 @@ function applyUnitToSlider() {
   t.value = v;
 }
 
-function targetText() { return $('#hab-target').value + UNIT_CFG[habForm.unit].suffix; }
+function targetText() {
+  const val = parseInt($('#hab-target').value, 10);
+  if (val === 0) return 'No target';
+  if (habForm.unit === 'custom') return val + (habForm.customUnit ? ` ${habForm.customUnit}` : '');
+  return val + UNIT_CFG[habForm.unit].suffix;
+}
 
 function syncHabitForm() {
   $$('#hab-emoji-picker .emoji-opt').forEach((b) => b.classList.toggle('sel', b.textContent === habForm.emoji));
   $$('#hab-color-picker .color-opt').forEach((b) => b.classList.toggle('sel', b.dataset.color === habForm.color));
   $$('#hab-freq-seg .seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.freq === habForm.freq));
   $$('#hab-unit-seg .seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.unit === habForm.unit));
+  const isCustom = habForm.unit === 'custom';
+  $('#hab-custom-unit-row').classList.toggle('hidden', !isCustom);
   const per = habForm.freq === 'weekly' ? 'week' : 'day';
-  $('#hab-target-hint').textContent = `${UNIT_CFG[habForm.unit].noun} per ${per}`;
+  const isZero = parseInt($('#hab-target').value, 10) === 0;
+  const noun = isZero ? 'Track only — no goal' : isCustom ? (habForm.customUnit || 'Amount') : UNIT_CFG[habForm.unit].noun;
+  $('#hab-target-hint').textContent = isZero ? noun : `${noun} per ${per}`;
   $('#hab-target-val').textContent = targetText();
 }
 
@@ -1183,6 +1204,8 @@ function openHabitForm(habit) {
   habForm.color = habit ? habit.color : HAB_COLORS[0];
   habForm.freq = habit ? habit.freqType : 'daily';
   habForm.unit = habit ? habit.unit : 'count';
+  habForm.customUnit = (habit && habit.unit === 'custom') ? (habit.customUnit || '') : '';
+  $('#hab-custom-unit').value = habForm.customUnit;
   applyUnitToSlider();
   $('#hab-target').value = habit ? habit.target : (habForm.unit === 'minutes' ? 30 : 1);
   syncHabitForm();
@@ -1193,7 +1216,8 @@ function openHabitForm(habit) {
 
 $$('#hab-freq-seg .seg-btn').forEach((b) => b.addEventListener('click', () => { habForm.freq = b.dataset.freq; syncHabitForm(); }));
 $$('#hab-unit-seg .seg-btn').forEach((b) => b.addEventListener('click', () => { habForm.unit = b.dataset.unit; applyUnitToSlider(); syncHabitForm(); }));
-$('#hab-target').addEventListener('input', () => { $('#hab-target-val').textContent = targetText(); });
+$('#hab-target').addEventListener('input', () => { $('#hab-target-val').textContent = targetText(); syncHabitForm(); });
+$('#hab-custom-unit').addEventListener('input', () => { habForm.customUnit = $('#hab-custom-unit').value; syncHabitForm(); });
 
 $('#hab-add-btn').addEventListener('click', () => {
   const form = $('#hab-form');
@@ -1205,12 +1229,16 @@ $('#hab-cancel').addEventListener('click', () => { $('#hab-form').classList.add(
 $('#hab-save').addEventListener('click', async () => {
   const name = $('#hab-name').value.trim();
   if (!name) { toast('Please name the habit', true); return; }
+  if (habForm.unit === 'custom' && !habForm.customUnit.trim()) {
+    toast('Please enter a unit name', true); return;
+  }
   const payload = {
     name,
     emoji: habForm.emoji,
     color: habForm.color,
     freqType: habForm.freq,
     unit: habForm.unit,
+    customUnit: habForm.unit === 'custom' ? habForm.customUnit.trim() : undefined,
     target: parseInt($('#hab-target').value, 10)
   };
   if (editingHabitId) { await api.updateHabit(editingHabitId, payload); toast('Habit updated'); }
