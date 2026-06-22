@@ -308,7 +308,7 @@ function syncStreaks() {
       if (freezers > 0) {
         freezers--;
         frozen[k] = true;
-        streak = Math.max(0, streak - 1); // freezer saves the streak, costs a day
+        // freezer saves the streak and leaves the current count intact
       } else {
         streak = 0;
         freezers = 0;
