@@ -389,6 +389,8 @@ function deleteReminder(id) {
 // backdated to a chosen day & time, which feeds both the per-habit and main streak.
 const HABIT_XP_PER_UNIT = { count: 10, minutes: 1, custom: 10 };
 const HABIT_TARGET_MAX = { count: 50, minutes: 1440, custom: 100 };
+const HABIT_FREEZERS_START = 3;   // each habit starts with this many freeze periods
+const HABIT_FREEZER_EVERY  = 7;   // earn one more freeze period every N consecutive met periods
 
 // Cumulative XP needed grows by a fixed step each level, giving a gentle ramp:
 // L2 @ 50xp, L3 @ 125, L4 @ 225, L5 @ 350 …
@@ -485,6 +487,66 @@ function weeklyStreakMap(map, target) {
   return streak;
 }
 
+// Compute streak with per-habit freeze periods (daily or weekly).
+// Returns { streak, freezers, frozenPeriods } where frozenPeriods is an array of
+// date strings (YYYY-MM-DD) that were saved by a freeze.
+// Walks the full history forward so earnings and spends stay consistent.
+function calcHabitStreak(map, createdAt, target, weekly) {
+  const today = dateKey();
+  const created = createdAt ? dateKey(new Date(createdAt)) : today;
+
+  // Build ordered list of periods to evaluate (daily: each day; weekly: each week-start).
+  const periods = [];
+  if (weekly) {
+    const ws0 = weekStart(new Date(created + 'T00:00:00'));
+    const wsNow = weekStart();
+    for (let cur = new Date(ws0); cur <= wsNow; cur.setDate(cur.getDate() + 7)) {
+      periods.push({ key: dateKey(cur), ws: new Date(cur) });
+    }
+  } else {
+    const d = new Date(created + 'T00:00:00');
+    const now = new Date();
+    while (d <= now) {
+      periods.push({ key: dateKey(d) });
+      d.setDate(d.getDate() + 1);
+    }
+  }
+
+  let streak = 0, freezers = HABIT_FREEZERS_START, metRun = 0;
+  const frozenPeriods = [];
+
+  for (const p of periods) {
+    const isToday = weekly
+      ? p.key === dateKey(weekStart())  // current (in-progress) week
+      : p.key === today;
+
+    const met = weekly
+      ? weekSumMap(map, p.ws) >= target
+      : (map[p.key] || 0) >= target;
+
+    if (met) {
+      streak++;
+      metRun++;
+      if (metRun > 0 && metRun % HABIT_FREEZER_EVERY === 0) freezers++;
+    } else if (isToday) {
+      // current period still in progress — don't penalise
+    } else {
+      if (freezers > 0) {
+        freezers--;
+        frozenPeriods.push(p.key);
+        // streak continues but no +1 for this period; metRun resets
+        metRun = 0;
+      } else {
+        streak = 0;
+        metRun = 0;
+        frozenPeriods.length = 0; // discard; old frozen periods pre-date the current streak
+      }
+    }
+  }
+
+  return { streak, freezers, frozenPeriods };
+}
+
 // Decorate a stored habit with all derived stats the UI needs.
 function enrichHabit(h) {
   const unit = habitUnit(h);
@@ -499,10 +561,10 @@ function enrichHabit(h) {
   let totalDone = 0;
   for (const v of Object.values(map)) totalDone += v;
 
-  let periodCount, streak, best;
+  let periodCount, best;
+  const { streak, freezers, frozenPeriods } = calcHabitStreak(map, h.createdAt, effectiveTarget, weekly);
   if (weekly) {
     periodCount = weekSumMap(map, weekStart());
-    streak = weeklyStreakMap(map, effectiveTarget);
     const metWeeks = [];
     for (let i = 0; i < 260; i++) {
       const ws = weekStart();
@@ -512,7 +574,6 @@ function enrichHabit(h) {
     best = bestRun(metWeeks, 7);
   } else {
     periodCount = map[today] || 0;
-    streak = dailyStreakMap(map, effectiveTarget);
     best = bestRun(Object.keys(map).filter((k) => map[k] >= effectiveTarget), 1);
   }
 
@@ -535,6 +596,10 @@ function enrichHabit(h) {
   let peakHour = -1, peakVal = 0;
   hours.forEach((v, i) => { if (v > peakVal) { peakVal = v; peakHour = i; } });
 
+  const frozenSet = new Set(frozenPeriods);
+  // mark frozen periods in history strip
+  const historyWithFreeze = history.map((d) => ({ ...d, frozen: frozenSet.has(d.date) }));
+
   return {
     id: h.id,
     name: h.name,
@@ -552,13 +617,15 @@ function enrichHabit(h) {
     periodDone: trackOnly ? periodCount > 0 : periodCount >= target,
     streak,
     bestStreak: Math.max(best, streak),
+    freezers,
+    frozenPeriods,
     totalDone,
     entryCount: entries.length,
     xp,
     level: lvl.level,
     xpInto: lvl.xpInto,
     xpForNext: lvl.xpForNext,
-    history,
+    history: historyWithFreeze,
     hours,
     peakHour
   };

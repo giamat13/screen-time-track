@@ -951,9 +951,11 @@ function historyStrip(h) {
   return h.history.map((d) => {
     let cls = 'hh-cell';
     if (d.met) cls += ' met';
+    else if (d.frozen) cls += ' frozen';
     else if (d.count > 0) cls += ' partial';
     if (d.date === todayK) cls += ' today';
-    return `<div class="${cls}" title="${d.date}: ${d.count}${u}"></div>`;
+    const tip = d.frozen ? `${d.date}: 🧊 frozen` : `${d.date}: ${d.count}${u}`;
+    return `<div class="${cls}" title="${tip}"></div>`;
   }).join('');
 }
 
@@ -998,6 +1000,7 @@ function habitCard(h) {
           <span class="freq-tag">${freqLabel(h)}</span>
           <span class="${streakCls}"><span class="fl">🔥</span> ${h.streak} ${periodWord} streak</span>
           <span class="subtle small">· best ${h.bestStreak}</span>
+          <span class="freeze-tag${h.freezers === 0 ? ' empty' : ''}" title="${h.freezers} freeze ${h.freqType === 'weekly' ? 'week' : 'day'}${h.freezers !== 1 ? 's' : ''} available">🧊 ${h.freezers}</span>
           ${peak}
         </div>
         <div class="xp-bar"><div class="xp-fill" data-w="${xpPct}"></div></div>
