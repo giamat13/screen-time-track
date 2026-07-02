@@ -135,6 +135,34 @@ function addTime(appName, seconds, isStudy = false) {
   scheduleSave();
 }
 
+// Undo up to `seconds` previously added by addTime for a specific past day/hour —
+// used when the tracker later realizes a stretch it counted was actually idle time
+// (idle detection only crosses its threshold after the fact).
+function subtractTime(dayKey, appName, seconds, hour, isStudy = false) {
+  if (!appName || seconds <= 0) return;
+  const day = data.days[dayKey];
+  if (!day) return;
+  const cur = day.apps[appName] || 0;
+  const dec = Math.min(cur, seconds);
+  if (dec <= 0) return;
+  day.apps[appName] = cur - dec;
+  if (day.apps[appName] <= 0) delete day.apps[appName];
+  day.total = Math.max(0, day.total - dec);
+  if (Array.isArray(day.hours) && hour >= 0 && hour < 24) {
+    day.hours[hour] = Math.max(0, day.hours[hour] - dec);
+  }
+  if (isStudy && day.studyApps) {
+    const curStudy = day.studyApps[appName] || 0;
+    const decStudy = Math.min(curStudy, dec);
+    if (decStudy > 0) {
+      day.studyApps[appName] = curStudy - decStudy;
+      if (day.studyApps[appName] <= 0) delete day.studyApps[appName];
+      day.study = Math.max(0, day.study - decStudy);
+    }
+  }
+  scheduleSave();
+}
+
 function getToday() {
   return ensureDay(dateKey());
 }
@@ -787,6 +815,7 @@ module.exports = {
   flush,
   dateKey,
   addTime,
+  subtractTime,
   getToday,
   rangeData,
   dayTotal,

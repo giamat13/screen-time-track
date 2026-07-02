@@ -113,6 +113,12 @@ class Tracker {
     this._stopping = false;
     this.lastTs = null;
     this.current = null;
+    this.prevIdle = false;
+    // Buffer of recently counted ticks, so that once idle detection actually
+    // trips (it can only fire after `idleThreshold` seconds of no input have
+    // already elapsed) we can retroactively undo the time wrongly counted
+    // during that window instead of leaving it stuck in the total.
+    this.recentAdds = [];
     this.resetSession();
   }
 
@@ -206,12 +212,27 @@ class Tracker {
 
     let counted = false;
     if (appName && !paused && !isIdle && delta > 0) {
-      this.store.addTime(appName, delta, !!settings.studyMode);
+      const dayKey = this.store.dateKey(new Date(now));
+      const hour = new Date(now).getHours();
+      const isStudy = !!settings.studyMode;
+      this.store.addTime(appName, delta, isStudy);
+      this.recentAdds.push({ ts: now, day: dayKey, hour, appName, delta, isStudy });
       this.session.appSecs[appName] = (this.session.appSecs[appName] || 0) + delta;
       this.session.seconds += delta;
       counted = true;
     }
     this.current = appName;
+
+    // Idle detection only trips once `idleThreshold` (or `mediaIdleCap`) seconds
+    // of no input have already passed, so the tail of that window was counted
+    // before we knew it was idle. The instant we cross into idle, unwind
+    // whatever was added since the real idle start (now - idleSecs).
+    if (isIdle && !this.prevIdle) {
+      this._revertIdlePeriod(idleSecs, now);
+    }
+    this.prevIdle = isIdle;
+    const maxAgeMs = (Math.max(settings.idleThreshold || 120, settings.mediaIdleCap || 600) + 5) * 1000;
+    this.recentAdds = this.recentAdds.filter((r) => now - r.ts <= maxAgeMs);
 
     this.onTick({
       currentApp: appName,
@@ -222,6 +243,23 @@ class Tracker {
       todaySeconds: this.store.getToday().total,
       session: this.getSessionInfo()
     });
+  }
+
+  // Unwind ticks counted after the moment the user actually went idle
+  // (now - idleSecs), which were wrongly attributed before the idle
+  // threshold had a chance to trip.
+  _revertIdlePeriod(idleSecs, now) {
+    const idleStart = now - idleSecs * 1000;
+    const toRevert = [];
+    this.recentAdds = this.recentAdds.filter((rec) => {
+      if (rec.ts > idleStart) { toRevert.push(rec); return false; }
+      return true;
+    });
+    for (const rec of toRevert) {
+      this.store.subtractTime(rec.day, rec.appName, rec.delta, rec.hour, rec.isStudy);
+      this.session.appSecs[rec.appName] = Math.max(0, (this.session.appSecs[rec.appName] || 0) - rec.delta);
+      this.session.seconds = Math.max(0, this.session.seconds - rec.delta);
+    }
   }
 
   getSessionInfo() {
