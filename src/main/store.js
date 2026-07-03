@@ -15,14 +15,16 @@ function defaults() {
     goalsSnapshots: [], // [{ effectiveDate: 'YYYY-MM-DD', goals: {...}, globalLimit: N }]
     reminders: [], // [{ id, time: 'HH:MM', message, enabled }]
     habits: [], // [{ id, name, emoji, color, freqType: 'daily'|'weekly', target, createdAt, log: { 'YYYY-MM-DD': count } }]
+    otherUsers: [], // [{ id, name, startedAt, endedAt }] — sessions logged while "Not Me" was on
     streaks: { current: 0, best: 0, lastCheckedDate: null, metDays: {}, freezers: 5, frozenDays: {} },
     settings: {
       tracking: true,
-      idleThreshold: 120, // seconds with no input => not counted
+      idleThreshold: 30, // seconds with no input => not counted
       pollInterval: 2, // seconds between samples
       autoLaunch: true,
       minimizeToTray: true,
       studyMode: false, // when on, time is still tracked but excluded from daily limits
+      notMe: false, // when on, someone else is at the computer — nothing is tracked at all
       browserDetail: true, // relabel browser time to the real site via the extension
       countMediaWhenIdle: true, // keep counting while a video/track is playing
       mediaIdleCap: 600, // after this many idle seconds, stop counting media (you left)
@@ -74,6 +76,7 @@ function load() {
       }
       data.reminders = parsed.reminders || [];
       data.habits = parsed.habits || [];
+      data.otherUsers = parsed.otherUsers || [];
       if (parsed.streaks) {
         data.streaks = Object.assign(defaults().streaks, parsed.streaks);
         data.streaks.metDays = parsed.streaks.metDays || {};
@@ -161,6 +164,56 @@ function subtractTime(dayKey, appName, seconds, hour, isStudy = false) {
     }
   }
   scheduleSave();
+}
+
+// DEBUG: subtract `seconds` from today's total, taken off the largest apps first.
+// Used by the Dev tools to test streaks/limits without waiting out real time.
+function debugSubtractToday(seconds) {
+  seconds = Math.max(0, Math.round(Number(seconds) || 0));
+  const key = dateKey();
+  const day = data.days[key];
+  if (seconds <= 0 || !day) return getToday();
+  const hour = new Date().getHours();
+  let remaining = seconds;
+  const appsDesc = Object.entries(day.apps).sort((a, b) => b[1] - a[1]);
+  for (const [name, sec] of appsDesc) {
+    if (remaining <= 0) break;
+    const take = Math.min(sec, remaining);
+    subtractTime(key, name, take, hour);
+    remaining -= take;
+  }
+  return getToday();
+}
+
+// ---- "Not Me" sessions (who was using the computer while tracking was off) ----
+function startOtherUser(name) {
+  if (!data.otherUsers) data.otherUsers = [];
+  const open = data.otherUsers.find((e) => !e.endedAt);
+  if (open) open.endedAt = new Date().toISOString(); // safety: close a dangling session first
+  const entry = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+    name: String(name || '').trim().slice(0, 40) || 'Someone else',
+    startedAt: new Date().toISOString(),
+    endedAt: null,
+  };
+  data.otherUsers.push(entry);
+  flush();
+  return entry;
+}
+
+function endOtherUser() {
+  const open = (data.otherUsers || []).find((e) => !e.endedAt);
+  if (!open) return null;
+  open.endedAt = new Date().toISOString();
+  flush();
+  return open;
+}
+
+function getOtherUsersLog(limit = 50) {
+  return (data.otherUsers || []).slice(-limit).reverse().map((e) => ({
+    ...e,
+    seconds: Math.round(((e.endedAt ? new Date(e.endedAt) : new Date()) - new Date(e.startedAt)) / 1000),
+  }));
 }
 
 function getToday() {
@@ -816,6 +869,10 @@ module.exports = {
   dateKey,
   addTime,
   subtractTime,
+  debugSubtractToday,
+  startOtherUser,
+  endOtherUser,
+  getOtherUsersLog,
   getToday,
   rangeData,
   dayTotal,

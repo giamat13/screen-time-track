@@ -15,6 +15,7 @@ let statsOffset = 0;
 let lastHours = new Array(24).fill(0);
 let trackingOn = true;
 let studyOn = false;
+let notMeOn = false;
 let dashFilter = 'all';
 let lastIdleSeconds = 0;
 let brkSettings = {};
@@ -135,6 +136,7 @@ function applyStudyUI(on) {
 }
 
 async function toggleStudyMode(on) {
+  if (on && notMeOn) { await api.endNotMe(); applyNotMeUI(false); } // mutually exclusive with Not Me
   await api.setSettings({ studyMode: on });
   applyStudyUI(on);
   toast(on ? '📚 Study Mode on — time tracked but not counted against limits' : 'Study Mode off');
@@ -142,6 +144,49 @@ async function toggleStudyMode(on) {
 }
 
 $('#hero-study').addEventListener('click', () => toggleStudyMode(!studyOn));
+
+function applyNotMeUI(on) {
+  notMeOn = !!on;
+  const btn = $('#hero-notme');
+  if (btn) btn.classList.toggle('active', notMeOn);
+  const cb = $('#set-notme');
+  if (cb) cb.checked = notMeOn;
+}
+
+function openNotMeModal() {
+  $('#notme-name').value = '';
+  $('#notme-modal').classList.remove('hidden');
+  $('#notme-name').focus();
+}
+function closeNotMeModal() {
+  $('#notme-modal').classList.add('hidden');
+  $('#set-notme').checked = notMeOn; // revert an in-flight checkbox click if cancelled
+}
+
+async function startNotMe(name) {
+  if (studyOn) { await api.setSettings({ studyMode: false }); applyStudyUI(false); } // mutually exclusive
+  await api.startNotMe(name);
+  applyNotMeUI(true);
+  toast(`👥 Not Me on — tracking paused for ${name}`);
+  if (!$('#page-dashboard').classList.contains('hidden')) loadDashboard();
+}
+
+async function endNotMe() {
+  await api.endNotMe();
+  applyNotMeUI(false);
+  toast('Not Me off — tracking resumed');
+  if (!$('#page-dashboard').classList.contains('hidden')) loadDashboard();
+}
+
+$('#hero-notme').addEventListener('click', () => { notMeOn ? endNotMe() : openNotMeModal(); });
+$('#set-notme').addEventListener('change', (e) => { e.target.checked ? openNotMeModal() : endNotMe(); });
+$('#notme-cancel-btn').addEventListener('click', closeNotMeModal);
+$('#notme-start-btn').addEventListener('click', () => {
+  const name = $('#notme-name').value.trim() || 'Someone else';
+  $('#notme-modal').classList.add('hidden');
+  startNotMe(name);
+});
+$('#notme-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#notme-start-btn').click(); });
 
 $('#dash-filter').addEventListener('change', (e) => { dashFilter = e.target.value; loadDashboard(); });
 
@@ -398,10 +443,11 @@ async function loadSettings() {
   const s = await api.getSettings();
   $('#set-tracking').checked = !!s.tracking;
   applyStudyUI(!!s.studyMode);
+  applyNotMeUI(!!s.notMe);
   $('#set-autolaunch').checked = !!s.autoLaunch;
   $('#set-tray').checked = !!s.minimizeToTray;
   $('#set-blocking').checked = !!s.blockingEnabled;
-  $('#set-idle').value = String(s.idleThreshold || 120);
+  $('#set-idle').value = String(s.idleThreshold || 30);
   $('#set-interval').value = String(s.pollInterval || 2);
   $('#set-brk-devmode').checked = !!(s.breakReminder && s.breakReminder.devMode);
 }
@@ -411,6 +457,27 @@ $('#set-autolaunch').addEventListener('change', (e) => api.setSettings({ autoLau
 $('#set-tray').addEventListener('change', (e) => api.setSettings({ minimizeToTray: e.target.checked }));
 $('#set-idle').addEventListener('change', (e) => api.setSettings({ idleThreshold: parseInt(e.target.value, 10) }));
 $('#set-interval').addEventListener('change', (e) => { api.setSettings({ pollInterval: parseInt(e.target.value, 10) }); toast('Restart to apply new interval'); });
+
+$('#dbg-remove-btn').addEventListener('click', async () => {
+  const min = parseFloat($('#dbg-remove-min').value);
+  if (!min || min <= 0) { toast('Enter minutes to remove'); return; }
+  await api.debugSubtractTime(min * 60);
+  $('#dbg-remove-min').value = '';
+  toast(`🧪 Removed ${min}m from today`);
+  if (!$('#page-dashboard').classList.contains('hidden')) loadDashboard();
+});
+
+$('#dbg-other-btn').addEventListener('click', async () => {
+  const name = $('#dbg-other-name').value.trim();
+  const min = parseFloat($('#dbg-other-min').value);
+  if (!name) { toast('Enter who it was'); return; }
+  if (!min || min <= 0) { toast('Enter minutes'); return; }
+  await api.debugSubtractTime(min * 60);
+  $('#dbg-other-name').value = '';
+  $('#dbg-other-min').value = '';
+  toast(`🧪 ${min}m attributed to ${name}, removed from your time`);
+  if (!$('#page-dashboard').classList.contains('hidden')) loadDashboard();
+});
 $('#set-brk-devmode').addEventListener('change', async (e) => {
   await api.setSettings({ breakReminder: { devMode: e.target.checked } });
   applyDevRows(e.target.checked); // keep the Breaks-page control in sync
@@ -1274,7 +1341,7 @@ function escapeHtml(s) {
 // ---------- boot ----------
 buildHabitPickers();
 go('dashboard');
-api.getSettings().then((s) => applyStudyUI(!!s.studyMode));
+api.getSettings().then((s) => { applyStudyUI(!!s.studyMode); applyNotMeUI(!!s.notMe); });
 setInterval(() => { if (!$('#page-dashboard').classList.contains('hidden')) loadDashboard(); }, 30000);
 
 })();

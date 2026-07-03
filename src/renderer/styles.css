@@ -143,6 +143,7 @@ h3 { font-size: 15px; margin: 0; font-weight: 600; }
 .hero-pause { background: rgba(255,255,255,.18); border: none; color: #fff; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; }
 .hero-pause:hover { background: rgba(255,255,255,.28); }
 #hero-study.active { background: #38bdf8; color: #042027; font-weight: 600; }
+#hero-notme.active { background: #f5a623; color: #2a1c02; font-weight: 600; }
 .hero-label { color: rgba(255,255,255,.85); margin: 18px 0 6px; font-size: 14px; }
 .hero-time { font-size: 46px; font-weight: 700; color: #fff; line-height: 1; }
 .hero-time small { font-size: 20px; font-weight: 500; opacity: .8; margin: 0 8px 0 2px; }

@@ -9,6 +9,11 @@ contextBridge.exposeInMainWorld('api', {
   setTracking: (on) => ipcRenderer.invoke('tracking:set', on),
   toggleTracking: () => ipcRenderer.invoke('tracking:toggle'),
   resetSession: () => ipcRenderer.invoke('session:reset'),
+  debugSubtractTime: (seconds) => ipcRenderer.invoke('debug:subtractTime', seconds),
+
+  startNotMe: (name) => ipcRenderer.invoke('notme:start', name),
+  endNotMe: () => ipcRenderer.invoke('notme:end'),
+  getNotMeLog: () => ipcRenderer.invoke('notme:log'),
 
   windowControl: (action) => ipcRenderer.invoke('win:control', action),
 

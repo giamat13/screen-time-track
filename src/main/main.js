@@ -166,7 +166,7 @@ function setupPowerEvents() {
 
 // ---- tracker --------------------------------------------------------------
 function isPaused() {
-  return !store.getSettings().tracking || locked || suspended;
+  return !store.getSettings().tracking || store.getSettings().notMe || locked || suspended;
 }
 
 function startBreakReminder() {
@@ -357,6 +357,17 @@ function setupIpc() {
   ipcMain.handle('tracking:set', (_e, on) => { setTracking(on); return store.getSettings().tracking; });
   ipcMain.handle('tracking:toggle', () => { setTracking(!store.getSettings().tracking); return store.getSettings().tracking; });
   ipcMain.handle('session:reset', () => { tracker.resetSession(); return tracker.getStatus(); });
+  ipcMain.handle('debug:subtractTime', (_e, seconds) => store.debugSubtractToday(seconds));
+
+  ipcMain.handle('notme:start', (_e, name) => {
+    store.setSettings({ notMe: true });
+    return store.startOtherUser(name);
+  });
+  ipcMain.handle('notme:end', () => {
+    store.setSettings({ notMe: false });
+    return store.endOtherUser();
+  });
+  ipcMain.handle('notme:log', () => store.getOtherUsersLog());
 
 
   ipcMain.handle('reminders:get', () => store.getReminders());
