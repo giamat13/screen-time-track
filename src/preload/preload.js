@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('api', {
   updateHabit: (id, partial) => ipcRenderer.invoke('habits:update', id, partial),
   deleteHabit: (id) => ipcRenderer.invoke('habits:delete', id),
   logHabit: (id, amount, when) => ipcRenderer.invoke('habits:log', id, amount, when),
+  pauseHabit: (id) => ipcRenderer.invoke('habits:pause', id),
 
   onTick: (cb) => ipcRenderer.on('tick', (_e, d) => cb(d)),
   onTrackingChanged: (cb) => ipcRenderer.on('tracking-changed', (_e, d) => cb(d)),

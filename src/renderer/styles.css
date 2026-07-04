@@ -510,10 +510,14 @@ input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 3
 .hh-cell.met { background: var(--hc, var(--accent)); border-color: transparent; }
 .hh-cell.partial { background: color-mix(in srgb, var(--hc, var(--accent)) 38%, var(--card-2)); }
 .hh-cell.frozen { background: #1e3a5f; border-color: #3b82f6; }
+.hh-cell.paused { background: repeating-linear-gradient(45deg, var(--card-2), var(--card-2) 4px, var(--border) 4px, var(--border) 8px); }
 .hh-cell.today { box-shadow: 0 0 0 2px color-mix(in srgb, var(--hc, var(--accent)) 50%, transparent); }
 .hh-cell .hh-tip { display: none; }
 .freeze-tag { font-size: 12px; font-weight: 600; color: #60a5fa; }
 .freeze-tag.empty { color: var(--muted-2); }
+.paused-tag { font-size: 12px; font-weight: 600; color: var(--muted-2); }
+.hab-icon-btn.active { color: var(--amber); border-color: var(--amber); }
+.habit-card.paused { opacity: 0.8; }
 
 .habits-empty { color: var(--muted); text-align: center; padding: 40px 0; font-size: 14px; }
 

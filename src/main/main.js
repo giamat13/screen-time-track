@@ -379,6 +379,7 @@ function setupIpc() {
   ipcMain.handle('habits:update', (_e, id, partial) => store.updateHabit(id, partial));
   ipcMain.handle('habits:delete', (_e, id) => store.deleteHabit(id));
   ipcMain.handle('habits:log', (_e, id, amount, when) => store.logHabit(id, amount, when));
+  ipcMain.handle('habits:pause', (_e, id) => store.toggleHabitPause(id));
 
   ipcMain.handle('win:control', (_e, action) => {
     if (!win) return;

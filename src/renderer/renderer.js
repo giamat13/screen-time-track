@@ -1017,11 +1017,12 @@ function historyStrip(h) {
   const u = h.unit === 'minutes' ? 'm' : h.unit === 'custom' ? ` ${customUnitLabel(h)}` : '×';
   return h.history.map((d) => {
     let cls = 'hh-cell';
-    if (d.met) cls += ' met';
+    if (d.paused) cls += ' paused';
+    else if (d.met) cls += ' met';
     else if (d.frozen) cls += ' frozen';
     else if (d.count > 0) cls += ' partial';
     if (d.date === todayK) cls += ' today';
-    const tip = d.frozen ? `${d.date}: 🧊 frozen` : `${d.date}: ${d.count}${u}`;
+    const tip = d.paused ? `${d.date}: ⏸ paused` : d.frozen ? `${d.date}: 🧊 frozen` : `${d.date}: ${d.count}${u}`;
     return `<div class="${cls}" title="${tip}"></div>`;
   }).join('');
 }
@@ -1047,8 +1048,11 @@ function habitCard(h) {
   const stepAttr = h.unit === 'minutes' ? 5 : 1;
   const hlpUnit = h.unit === 'minutes' ? 'min' : h.unit === 'custom' ? customUnitLabel(h) : '×';
 
+  const pausePeriodWord = h.freqType === 'weekly' ? 'week' : 'day';
+  const pauseTitle = h.paused ? `Resume — currently paused this ${pausePeriodWord}` : `Pause this ${pausePeriodWord} (doesn't break your streak)`;
+
   const card = document.createElement('div');
-  card.className = 'habit-card' + (h.periodDone ? ' done' : '');
+  card.className = 'habit-card' + (h.periodDone ? ' done' : '') + (h.paused ? ' paused' : '');
   card.style.setProperty('--hc', h.color || '#2e9bff');
   card.dataset.id = h.id;
   card.innerHTML = `
@@ -1059,6 +1063,7 @@ function habitCard(h) {
           <div class="habit-name">${escapeHtml(h.name)}</div>
           <div class="habit-tools">
             <span class="level-badge">★ Lv ${h.level}</span>
+            <button class="hab-icon-btn hab-pause${h.paused ? ' active' : ''}" title="${pauseTitle}">${h.paused ? '▶' : '⏸'}</button>
             <button class="hab-icon-btn hab-edit" title="Edit habit">✎</button>
             <button class="hab-icon-btn del hab-del" title="Delete habit">✕</button>
           </div>
@@ -1068,6 +1073,7 @@ function habitCard(h) {
           <span class="${streakCls}"><span class="fl">🔥</span> ${h.streak} ${periodWord} streak</span>
           <span class="subtle small">· best ${h.bestStreak}</span>
           <span class="freeze-tag${h.freezers === 0 ? ' empty' : ''}" title="${h.freezers} freeze ${h.freqType === 'weekly' ? 'week' : 'day'}${h.freezers !== 1 ? 's' : ''} available">🧊 ${h.freezers}</span>
+          ${h.paused ? `<span class="paused-tag" title="This ${pausePeriodWord} is paused — won't count against your streak">⏸ paused</span>` : ''}
           ${peak}
         </div>
         <div class="xp-bar"><div class="xp-fill" data-w="${xpPct}"></div></div>
@@ -1106,6 +1112,7 @@ function habitCard(h) {
   card.querySelector('.hab-undo').addEventListener('click', () => doLogHabit(h.id, -step, card));
   card.querySelector('.hab-edit').addEventListener('click', () => openHabitForm(h));
   card.querySelector('.hab-del').addEventListener('click', () => deleteHabitConfirmed(h.id));
+  card.querySelector('.hab-pause').addEventListener('click', () => doPauseHabit(h.id));
   wireLogPanel(card, h);
   return card;
 }
@@ -1172,6 +1179,13 @@ async function doLogHabit(id, amount, card, when) {
 
   const all = await api.getHabits();
   renderHabitSummary(all);
+}
+
+async function doPauseHabit(id) {
+  const updated = await api.pauseHabit(id);
+  if (!updated) return;
+  toast(updated.paused ? 'Paused — streak protected' : 'Resumed');
+  loadHabits();
 }
 
 async function deleteHabitConfirmed(id) {

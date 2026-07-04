@@ -507,6 +507,17 @@ function bestRun(keys, stepDays) {
 function habitUnit(h) { return h.unit === 'minutes' ? 'minutes' : h.unit === 'custom' ? 'custom' : 'count'; }
 function clampTarget(unit, v) { const n = parseInt(v, 10); return isNaN(n) ? 1 : Math.max(0, Math.min(HABIT_TARGET_MAX[unit] || 50, n)); }
 
+// Periods (days, or week-starts for weekly habits) the user has explicitly paused —
+// a deliberate day/week off that is neutral for both the habit's own streak and the
+// main streak, unlike a freezer which is spent automatically to save a real miss.
+function habitPausedSet(h) {
+  return new Set(Array.isArray(h.pausedPeriods) ? h.pausedPeriods : []);
+}
+
+function currentPeriodKey(weekly) {
+  return weekly ? dateKey(weekStart()) : dateKey();
+}
+
 // Migrate any legacy day-count `log` into the timestamped `entries` model (one entry
 // per day at noon), then return the entries array (the single source of truth).
 function habitEntries(h) {
@@ -572,7 +583,7 @@ function weeklyStreakMap(map, target) {
 // Returns { streak, freezers, frozenPeriods } where frozenPeriods is an array of
 // date strings (YYYY-MM-DD) that were saved by a freeze.
 // Walks the full history forward so earnings and spends stay consistent.
-function calcHabitStreak(map, createdAt, target, weekly) {
+function calcHabitStreak(map, createdAt, target, weekly, pausedSet = new Set()) {
   const today = dateKey();
   const created = createdAt ? dateKey(new Date(createdAt)) : today;
 
@@ -600,6 +611,8 @@ function calcHabitStreak(map, createdAt, target, weekly) {
     const isToday = weekly
       ? p.key === dateKey(weekStart())  // current (in-progress) week
       : p.key === today;
+
+    if (pausedSet.has(p.key)) continue; // paused period — a day/week off, neutral for the streak
 
     const met = weekly
       ? weekSumMap(map, p.ws) >= target
@@ -642,8 +655,11 @@ function enrichHabit(h) {
   let totalDone = 0;
   for (const v of Object.values(map)) totalDone += v;
 
+  const pausedSet = habitPausedSet(h);
+  const paused = pausedSet.has(currentPeriodKey(weekly));
+
   let periodCount, best;
-  const { streak, freezers, frozenPeriods } = calcHabitStreak(map, h.createdAt, effectiveTarget, weekly);
+  const { streak, freezers, frozenPeriods } = calcHabitStreak(map, h.createdAt, effectiveTarget, weekly, pausedSet);
   if (weekly) {
     periodCount = weekSumMap(map, weekStart());
     const metWeeks = [];
@@ -678,8 +694,12 @@ function enrichHabit(h) {
   hours.forEach((v, i) => { if (v > peakVal) { peakVal = v; peakHour = i; } });
 
   const frozenSet = new Set(frozenPeriods);
-  // mark frozen periods in history strip
-  const historyWithFreeze = history.map((d) => ({ ...d, frozen: frozenSet.has(d.date) }));
+  // mark frozen/paused periods in history strip (weekly habits pause a whole week,
+  // so a day is paused if the week it falls in was paused)
+  const historyWithFreeze = history.map((d) => {
+    const periodKey = weekly ? dateKey(weekStart(new Date(d.date + 'T00:00:00'))) : d.date;
+    return { ...d, frozen: frozenSet.has(d.date), paused: pausedSet.has(periodKey) };
+  });
 
   return {
     id: h.id,
@@ -700,6 +720,7 @@ function enrichHabit(h) {
     bestStreak: Math.max(best, streak),
     freezers,
     frozenPeriods,
+    paused,
     totalDone,
     entryCount: entries.length,
     xp,
@@ -757,6 +778,22 @@ function deleteHabit(id) {
   return getHabits();
 }
 
+// Toggle a deliberate day/week off for the current period (today for daily habits,
+// this week for weekly ones). Unlike a freezer, this is manual and doesn't cost
+// anything — it just excludes the period from both the habit's own streak and the
+// main streak instead of counting it as a miss.
+function toggleHabitPause(id) {
+  const h = (data.habits || []).find((x) => x.id === id);
+  if (!h) return null;
+  if (!Array.isArray(h.pausedPeriods)) h.pausedPeriods = [];
+  const key = currentPeriodKey(h.freqType === 'weekly');
+  const idx = h.pausedPeriods.indexOf(key);
+  if (idx >= 0) h.pausedPeriods.splice(idx, 1);
+  else h.pausedPeriods.push(key);
+  flush();
+  return enrichHabit(h);
+}
+
 // Record a completion. `amount` > 0 adds it; < 0 undoes that much from today.
 // `when` (optional) = { date: 'YYYY-MM-DD', time: 'HH:MM' } to backdate the entry for
 // statistics; omitted means "now".
@@ -806,6 +843,7 @@ function dailyHabitsState(key) {
     const created = h.createdAt ? dateKey(new Date(h.createdAt)) : key;
     if (key < created && !(map[key] > 0)) continue; // didn't exist yet and nothing logged
     if (clampTarget(habitUnit(h), h.target) === 0) continue; // track-only habit never blocks streak
+    if (habitPausedSet(h).has(key)) continue; // paused that day — doesn't obligate the main streak either
     any = true;
     if ((map[key] || 0) < clampTarget(habitUnit(h), h.target)) allMet = false;
   }
@@ -827,6 +865,7 @@ function weeklyHabitsState(key) {
     const sum = weekSumMap(dayMapOf(h), ws);
     if (wsKey < created && !(sum > 0)) continue; // habit didn't exist that week, nothing logged
     if (clampTarget(habitUnit(h), h.target) === 0) continue; // track-only habit never blocks streak
+    if (habitPausedSet(h).has(wsKey)) continue; // paused that week — doesn't obligate the main streak either
     any = true;
     if (sum < clampTarget(habitUnit(h), h.target)) return false;
   }
@@ -894,5 +933,6 @@ module.exports = {
   updateHabit,
   deleteHabit,
   logHabit,
+  toggleHabitPause,
   raw: () => data
 };
