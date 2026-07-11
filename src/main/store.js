@@ -17,6 +17,19 @@ function defaults() {
     habits: [], // [{ id, name, emoji, color, freqType: 'daily'|'weekly', target, createdAt, log: { 'YYYY-MM-DD': count } }]
     otherUsers: [], // [{ id, name, startedAt, endedAt }] — sessions logged while "Not Me" was on
     streaks: { current: 0, best: 0, lastCheckedDate: null, metDays: {}, freezers: 5, frozenDays: {} },
+    forest: {
+      coins: 0,
+      coinsEarned: 0, // lifetime, for the coins-100 achievement
+      unlockedSpecies: ['oak'],
+      selectedSpecies: 'oak',
+      trees: [], // [{ id, species, tag, taskId, plannedSec, actualSec, startedAt, endedAt, result: 'success'|'dead'|'givenup', mode }]
+      tags: ['Study', 'Work', 'Writing'],
+      tasks: [], // [{ id, title, done, createdAt, doneAt, focusSec, treeCount }]
+      distractions: { mode: 'blocklist', apps: [] },
+      achievements: {}, // id -> unlockedAt ISO
+      settings: { allowPause: true, warningSec: 10 },
+      activeSession: null // crash-recovery snapshot; non-null on boot => that tree died
+    },
     settings: {
       tracking: true,
       idleThreshold: 30, // seconds with no input => not counted
@@ -81,6 +94,12 @@ function load() {
         data.streaks = Object.assign(defaults().streaks, parsed.streaks);
         data.streaks.metDays = parsed.streaks.metDays || {};
         data.streaks.frozenDays = parsed.streaks.frozenDays || {};
+      }
+      // Deep-merge forest so new keys get defaults while user data survives.
+      data.forest = Object.assign(defaults().forest, parsed.forest || {});
+      if (parsed.forest) {
+        data.forest.distractions = Object.assign(defaults().forest.distractions, parsed.forest.distractions || {});
+        data.forest.settings = Object.assign(defaults().forest.settings, parsed.forest.settings || {});
       }
     }
   } catch (e) {
@@ -901,6 +920,141 @@ function setSettings(partial) {
   return data.settings;
 }
 
+// ---------------- forest (focus-timer gamification) ----------------
+function getForest() {
+  if (!data.forest) data.forest = defaults().forest;
+  return data.forest;
+}
+
+// Public view: everything the renderer needs (activeSession stays internal).
+function getForestData() {
+  const f = getForest();
+  return {
+    coins: f.coins,
+    coinsEarned: f.coinsEarned,
+    unlockedSpecies: f.unlockedSpecies,
+    selectedSpecies: f.selectedSpecies,
+    trees: f.trees,
+    tags: f.tags,
+    tasks: f.tasks,
+    distractions: f.distractions,
+    achievements: f.achievements,
+    settings: f.settings
+  };
+}
+
+function forestAddTree(tree) {
+  const f = getForest();
+  f.trees.push(tree);
+  if (tree.taskId) {
+    const task = f.tasks.find((t) => t.id === tree.taskId);
+    if (task && tree.result === 'success') {
+      task.focusSec += tree.actualSec;
+      task.treeCount += 1;
+    }
+  }
+  scheduleSave();
+  return tree;
+}
+
+function forestAddCoins(n) {
+  const f = getForest();
+  f.coins += n;
+  if (n > 0) f.coinsEarned += n;
+  scheduleSave();
+  return f.coins;
+}
+
+function forestBuySpecies(id, price) {
+  const f = getForest();
+  if (f.unlockedSpecies.includes(id)) return { ok: false, reason: 'owned', coins: f.coins };
+  if (f.coins < price) return { ok: false, reason: 'coins', coins: f.coins };
+  f.coins -= price;
+  f.unlockedSpecies.push(id);
+  scheduleSave();
+  return { ok: true, coins: f.coins };
+}
+
+function forestSelectSpecies(id) {
+  const f = getForest();
+  if (f.unlockedSpecies.includes(id)) { f.selectedSpecies = id; scheduleSave(); }
+  return f.selectedSpecies;
+}
+
+function forestSetDistractions(d) {
+  const f = getForest();
+  f.distractions = {
+    mode: d.mode === 'allowlist' ? 'allowlist' : 'blocklist',
+    apps: Array.isArray(d.apps) ? d.apps.filter((a) => typeof a === 'string' && a.trim()).map((a) => a.trim()) : []
+  };
+  scheduleSave();
+  return f.distractions;
+}
+
+function forestSetTags(tags) {
+  const f = getForest();
+  if (Array.isArray(tags)) {
+    f.tags = tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim()).slice(0, 20);
+    if (!f.tags.length) f.tags = ['Focus'];
+    scheduleSave();
+  }
+  return f.tags;
+}
+
+function forestSetSettings(partial) {
+  const f = getForest();
+  f.settings = Object.assign({}, f.settings, partial || {});
+  scheduleSave();
+  return f.settings;
+}
+
+function forestSetActiveSession(snapshot) {
+  getForest().activeSession = snapshot;
+  scheduleSave();
+}
+
+function forestUnlockAchievement(id) {
+  const f = getForest();
+  if (f.achievements[id]) return false;
+  f.achievements[id] = new Date().toISOString();
+  scheduleSave();
+  return true;
+}
+
+function forestAddTask(title) {
+  const f = getForest();
+  const t = {
+    id: 'task_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    title: String(title || '').trim().slice(0, 120),
+    done: false,
+    createdAt: new Date().toISOString(),
+    doneAt: null,
+    focusSec: 0,
+    treeCount: 0
+  };
+  if (!t.title) return null;
+  f.tasks.push(t);
+  scheduleSave();
+  return t;
+}
+
+function forestToggleTask(id) {
+  const f = getForest();
+  const t = f.tasks.find((x) => x.id === id);
+  if (!t) return null;
+  t.done = !t.done;
+  t.doneAt = t.done ? new Date().toISOString() : null;
+  scheduleSave();
+  return t;
+}
+
+function forestDeleteTask(id) {
+  const f = getForest();
+  f.tasks = f.tasks.filter((x) => x.id !== id);
+  scheduleSave();
+  return true;
+}
+
 module.exports = {
   DATA_FILE,
   load,
@@ -934,5 +1088,19 @@ module.exports = {
   deleteHabit,
   logHabit,
   toggleHabitPause,
+  getForest,
+  getForestData,
+  forestAddTree,
+  forestAddCoins,
+  forestBuySpecies,
+  forestSelectSpecies,
+  forestSetDistractions,
+  forestSetTags,
+  forestSetSettings,
+  forestSetActiveSession,
+  forestUnlockAchievement,
+  forestAddTask,
+  forestToggleTask,
+  forestDeleteTask,
   raw: () => data
 };

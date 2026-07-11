@@ -32,6 +32,7 @@
         <button class="nav-item" data-page="goals"><span class="ico">&#127919;</span><span class="lbl">Goals</span></button>
         <button class="nav-item" data-page="streak"><span class="ico">&#128293;</span><span class="lbl">Streak</span></button>
         <button class="nav-item" data-page="habits"><span class="ico">&#127793;</span><span class="lbl">Habits</span></button>
+        <button class="nav-item" data-page="forest"><span class="ico">&#127794;</span><span class="lbl">Forest</span></button>
         <button class="nav-item" data-page="reminders"><span class="ico">&#128276;</span><span class="lbl">Reminders</span></button>
       </div>
       <button class="nav-item nav-settings" data-page="settings"><span class="ico">&#9881;</span><span class="lbl">Settings</span></button>
@@ -557,7 +558,174 @@
           </div>
         </div>
       </section>
+
+      <!-- ============ FOREST ============ -->
+      <section class="page hidden" id="page-forest">
+        <div class="page-head">
+          <div>
+            <h1>&#127794; Forest</h1>
+            <p class="subtle">Plant a tree and stay focused — leave for a distracting app and it dies</p>
+          </div>
+          <div class="forest-coins" id="forest-coins"><span class="coin-ico">&#11044;</span><span id="forest-coins-val">0</span></div>
+        </div>
+
+        <div class="range-tabs forest-subtabs">
+          <button class="range-tab active" data-fview="plant">Plant</button>
+          <button class="range-tab" data-fview="tasks">Tasks</button>
+          <button class="range-tab" data-fview="myforest">My Forest</button>
+          <button class="range-tab" data-fview="shop">Shop</button>
+          <button class="range-tab" data-fview="fstats">Stats</button>
+          <button class="range-tab" data-fview="badges">Achievements</button>
+        </div>
+
+        <!-- ---- Plant ---- -->
+        <div class="fview" id="fview-plant">
+          <div class="forest-plant-card" id="forest-plant-card">
+            <!-- setup state -->
+            <div id="forest-setup">
+              <div class="forest-tree-stage" id="forest-preview-tree"></div>
+              <div class="forest-row">
+                <div class="forest-picker" id="forest-species-picker"></div>
+              </div>
+              <div class="forest-row forest-timer-row" id="forest-timer-row">
+                <input type="range" id="forest-duration" min="10" max="120" step="5" value="25" />
+                <div class="forest-duration-label"><span id="forest-duration-val">25</span> min</div>
+              </div>
+              <div class="forest-row forest-mode-row">
+                <button class="forest-chip active" id="forest-mode-timer">&#8987; Timer</button>
+                <button class="forest-chip" id="forest-mode-stopwatch">&#9201; Stopwatch</button>
+                <select id="forest-tag" class="text-input forest-select"></select>
+                <select id="forest-task" class="text-input forest-select"><option value="">No task</option></select>
+              </div>
+              <button class="forest-plant-btn" id="forest-plant-btn">Plant</button>
+              <button class="forest-link" id="forest-distractions-btn">&#9881; Distractions&hellip;</button>
+            </div>
+            <!-- active session state -->
+            <div id="forest-active" class="hidden">
+              <div class="forest-warning-banner hidden" id="forest-warning">
+                <span>&#9888;&#65039; Go back! Your tree dies in <b id="forest-warning-count">10</b>s</span>
+              </div>
+              <div class="forest-tree-stage" id="forest-live-tree"></div>
+              <div class="forest-live-timer" id="forest-live-timer">25:00</div>
+              <div class="forest-live-sub" id="forest-live-sub">Stay focused!</div>
+              <div class="forest-row forest-active-actions">
+                <button class="btn ghost" id="forest-pause-btn">&#10073;&#10073; Pause</button>
+                <button class="btn ghost danger" id="forest-giveup-btn">Give up</button>
+                <button class="btn primary hidden" id="forest-finish-btn">&#127937; Finish</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Tasks ---- -->
+        <div class="fview hidden" id="fview-tasks">
+          <div class="card">
+            <div class="card-head"><h3>&#128203; Tasks</h3></div>
+            <div class="forest-task-add">
+              <input type="text" id="forest-task-input" class="text-input" placeholder="Add a task&hellip;" maxlength="120" />
+              <button class="btn primary" id="forest-task-add-btn">Add</button>
+            </div>
+            <div id="forest-task-list"></div>
+          </div>
+        </div>
+
+        <!-- ---- My Forest ---- -->
+        <div class="fview hidden" id="fview-myforest">
+          <div class="card">
+            <div class="card-head">
+              <h3>&#127795; My Forest</h3>
+              <div class="range-tabs" id="forest-range-tabs">
+                <div class="date-nav">
+                  <button class="date-nav-btn" id="forest-nav-prev" title="Previous">&#8249;</button>
+                  <span class="date-nav-label" id="forest-nav-label">Today</span>
+                  <button class="date-nav-btn" id="forest-nav-next" title="Next" disabled>&#8250;</button>
+                </div>
+                <button class="range-tab active" data-frange="day">Day</button>
+                <button class="range-tab" data-frange="week">Week</button>
+                <button class="range-tab" data-frange="month">Month</button>
+                <button class="range-tab" data-frange="year">Year</button>
+              </div>
+            </div>
+            <div class="forest-diorama" id="forest-diorama"></div>
+            <div class="forest-diorama-legend" id="forest-diorama-summary"></div>
+          </div>
+        </div>
+
+        <!-- ---- Shop ---- -->
+        <div class="fview hidden" id="fview-shop">
+          <div class="forest-shop-grid" id="forest-shop-grid"></div>
+        </div>
+
+        <!-- ---- Stats ---- -->
+        <div class="fview hidden" id="fview-fstats">
+          <div class="cards-row">
+            <div class="card stat"><div class="stat-ico c-green">&#9200;</div><div class="stat-val" id="fstat-total">0h</div><div class="stat-lbl">Total Focused</div></div>
+            <div class="card stat"><div class="stat-ico c-green">&#127794;</div><div class="stat-val" id="fstat-alive">0</div><div class="stat-lbl">Trees Grown</div></div>
+            <div class="card stat"><div class="stat-ico c-amber">&#129344;</div><div class="stat-val" id="fstat-dead">0</div><div class="stat-lbl">Trees Lost</div></div>
+            <div class="card stat"><div class="stat-ico c-violet">&#127919;</div><div class="stat-val" id="fstat-rate">—</div><div class="stat-lbl">Success Rate</div></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Last 7 days</h3></div>
+            <div class="forest-bars" id="forest-bars"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>By tag</h3></div>
+            <div id="forest-tagstats"></div>
+          </div>
+        </div>
+
+        <!-- ---- Achievements ---- -->
+        <div class="fview hidden" id="fview-badges">
+          <div class="forest-badges" id="forest-badges"></div>
+        </div>
+      </section>
     </main>
+  </div>
+
+  <!-- Forest: distractions editor -->
+  <div id="forest-distract-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-emoji">&#128683;</div>
+      <h2>Distracting apps</h2>
+      <p class="modal-sub">Switching to these apps during a session puts your tree in danger.</p>
+      <div class="forest-mode-row" style="margin-bottom:10px">
+        <button class="forest-chip active" id="fd-mode-block">Blocklist</button>
+        <button class="forest-chip" id="fd-mode-allow">Allowlist</button>
+      </div>
+      <p class="subtle" id="fd-mode-hint">Blocklist: listed apps kill your tree.</p>
+      <div id="fd-list" class="forest-fd-list"></div>
+      <div style="display:flex;gap:8px;margin:10px 0">
+        <input type="text" id="fd-input" class="text-input" style="flex:1" placeholder="App name (e.g. Discord)" list="fd-suggestions" maxlength="60" />
+        <datalist id="fd-suggestions"></datalist>
+        <button class="btn ghost" id="fd-add-btn">Add</button>
+      </div>
+      <div class="modal-actions">
+        <button class="btn primary modal-btn" id="fd-save-btn">Save</button>
+        <button class="btn ghost modal-btn" id="fd-cancel-btn">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Forest: session result -->
+  <div id="forest-result-modal" class="modal-overlay hidden">
+    <div class="modal-card forest-result-card">
+      <div class="forest-result-tree" id="forest-result-tree"></div>
+      <h2 id="forest-result-title">Your tree is fully grown!</h2>
+      <p class="modal-sub" id="forest-result-sub">Great focus session.</p>
+      <div class="forest-result-coins hidden" id="forest-result-coins">+<span id="forest-result-coins-val">0</span> coins</div>
+      <div id="forest-result-achievements"></div>
+      <div class="modal-actions">
+        <button class="btn primary modal-btn" id="forest-result-ok">Nice!</button>
+        <button class="btn ghost modal-btn" id="forest-result-breathe">&#127811; Breathe</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Forest: breathing overlay (Mindful-Space style) -->
+  <div id="forest-breathe" class="forest-breathe hidden">
+    <div class="forest-breathe-circle"></div>
+    <div class="forest-breathe-text" id="forest-breathe-text">Breathe in</div>
+    <button class="forest-breathe-close" id="forest-breathe-close">&#10005;</button>
   </div>
 
   <!-- Not Me: who's using the computer -->
@@ -603,5 +771,7 @@
   </div>
 
   <script src="renderer.js"></script>
+  <script src="forest-art.js"></script>
+  <script src="forest-ui.js"></script>
 </body>
 </html>

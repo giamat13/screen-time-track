@@ -540,3 +540,188 @@ input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 3
   0% { opacity: 1; transform: translateY(-20px) rotate(0deg); }
   100% { opacity: 0; transform: translateY(220px) rotate(540deg); }
 }
+
+/* ---------- forest ---------- */
+:root {
+  --f-deep: #145A4E;
+  --f-dark: #1a2b22;
+  --f-darker: #142019;
+  --f-teal: #3FA98F;
+  --f-leaf: #8ED320;
+  --f-mint: #E6FEEC;
+}
+.forest-coins {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--f-dark); border: 1px solid #2a4636;
+  padding: 8px 16px; border-radius: 999px; font-weight: 700; font-size: 15px;
+}
+.forest-coins .coin-ico { color: #f5c542; font-size: 12px; }
+.forest-subtabs { margin-bottom: 16px; }
+
+.fview { animation: fadein .15s ease; }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
+/* plant card */
+.forest-plant-card {
+  max-width: 560px; margin: 0 auto;
+  background: linear-gradient(170deg, var(--f-dark), var(--f-darker));
+  border: 1px solid #274539; border-radius: 20px;
+  padding: 26px 28px 30px; text-align: center;
+}
+.forest-tree-stage {
+  width: 220px; height: 220px; margin: 0 auto 8px;
+  display: flex; align-items: center; justify-content: center;
+}
+.forest-tree-stage svg { width: 100%; height: 100%; }
+.forest-row { display: flex; justify-content: center; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+
+.forest-picker { display: flex; gap: 8px; overflow-x: auto; max-width: 100%; padding: 4px; }
+.forest-species {
+  width: 64px; height: 64px; border-radius: 14px; flex-shrink: 0;
+  background: var(--f-darker); border: 2px solid transparent; cursor: pointer; padding: 4px;
+}
+.forest-species svg { width: 100%; height: 100%; }
+.forest-species.selected { border-color: var(--f-leaf); background: #1d3325; }
+.forest-species.locked { opacity: .35; filter: grayscale(.8); cursor: not-allowed; }
+
+.forest-timer-row { gap: 14px; }
+#forest-duration { flex: 1; max-width: 300px; accent-color: var(--f-leaf); }
+.forest-duration-label { font-size: 20px; font-weight: 700; min-width: 76px; text-align: left; }
+.forest-duration-label span { color: var(--f-leaf); }
+
+.forest-chip {
+  background: var(--f-darker); color: var(--muted); border: 1px solid #2a4636;
+  padding: 7px 14px; border-radius: 999px; cursor: pointer; font-size: 13px;
+}
+.forest-chip.active { color: var(--f-mint); border-color: var(--f-teal); background: #17362b; }
+.forest-select { width: auto; min-width: 110px; background: var(--f-darker); border-color: #2a4636; }
+
+.forest-plant-btn {
+  display: block; width: 220px; margin: 6px auto 10px;
+  background: linear-gradient(160deg, var(--f-leaf), #5da814);
+  color: #10240b; font-size: 18px; font-weight: 800; letter-spacing: .3px;
+  border: none; border-radius: 999px; padding: 14px 0; cursor: pointer;
+  box-shadow: 0 6px 18px -6px rgba(142, 211, 32, .5);
+}
+.forest-plant-btn:hover { filter: brightness(1.08); }
+.forest-plant-btn:disabled { opacity: .5; cursor: not-allowed; }
+.forest-link { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; }
+.forest-link:hover { color: var(--f-mint); }
+
+/* active session */
+.forest-live-timer { font-size: 56px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: 1px; }
+.forest-live-sub { color: var(--f-teal); margin: 4px 0 16px; }
+.forest-active-actions { gap: 12px; }
+.forest-warning-banner {
+  background: rgba(226, 58, 58, .15); border: 1px solid rgba(226, 58, 58, .5);
+  color: #ff8f8f; border-radius: 12px; padding: 10px 14px; margin-bottom: 12px;
+  font-weight: 600; animation: fwpulse 1s infinite;
+}
+@keyframes fwpulse { 50% { background: rgba(226, 58, 58, .3); } }
+#forest-plant-card.warning { border-color: rgba(226, 58, 58, .6); }
+
+/* tasks */
+.forest-task-add { display: flex; gap: 8px; margin-bottom: 14px; }
+.forest-task-add input { flex: 1; }
+.forest-task {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: 12px; margin-bottom: 6px;
+  background: var(--card-2); border: 1px solid var(--border);
+}
+.forest-task.done .ft-title { text-decoration: line-through; color: var(--muted-2); }
+.forest-task .ft-check {
+  width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--f-teal);
+  background: none; cursor: pointer; color: #10240b; font-size: 13px; line-height: 1; padding: 0;
+}
+.forest-task.done .ft-check { background: var(--f-leaf); border-color: var(--f-leaf); }
+.forest-task .ft-title { flex: 1; }
+.forest-task .ft-meta { color: var(--muted); font-size: 12px; display: flex; gap: 10px; }
+.forest-task .ft-del { background: none; border: none; color: var(--muted-2); cursor: pointer; font-size: 15px; }
+.forest-task .ft-del:hover { color: #e23a3a; }
+
+/* my forest diorama */
+.forest-diorama { display: flex; flex-wrap: wrap; gap: 18px; justify-content: center; padding: 10px 0; }
+.forest-diorama svg { max-width: 420px; width: 100%; height: auto; }
+.forest-diorama-legend { text-align: center; color: var(--muted); font-size: 13px; padding-bottom: 6px; }
+.forest-empty { text-align: center; color: var(--muted-2); padding: 40px 0; }
+
+/* shop */
+.forest-shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+.forest-shop-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+  padding: 16px; text-align: center;
+}
+.forest-shop-card .fs-art { width: 120px; height: 120px; margin: 0 auto 6px; }
+.forest-shop-card .fs-art svg { width: 100%; height: 100%; }
+.forest-shop-card .fs-name { font-weight: 700; margin-bottom: 2px; }
+.forest-shop-card .fs-price { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+.forest-shop-card .fs-price .coin-ico { color: #f5c542; font-size: 10px; }
+.forest-shop-btn {
+  width: 100%; border-radius: 999px; border: 1px solid var(--f-teal);
+  background: none; color: var(--f-teal); padding: 8px 0; cursor: pointer; font-weight: 600;
+}
+.forest-shop-btn.buy:hover { background: #17362b; }
+.forest-shop-btn.owned { border-color: var(--border); color: var(--muted-2); cursor: default; }
+.forest-shop-btn.selected { background: var(--f-leaf); border-color: var(--f-leaf); color: #10240b; cursor: default; }
+.forest-shop-btn.cant { opacity: .45; cursor: not-allowed; }
+
+/* stats */
+.c-green { background: rgba(142, 211, 32, .12); color: var(--f-leaf); }
+.forest-bars { display: flex; align-items: flex-end; gap: 10px; height: 140px; padding: 10px 6px 0; }
+.forest-bar { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; justify-content: flex-end; }
+.forest-bar .fb-fill { width: 70%; max-width: 38px; background: linear-gradient(180deg, var(--f-leaf), var(--f-teal)); border-radius: 6px 6px 2px 2px; min-height: 2px; }
+.forest-bar .fb-lbl { color: var(--muted); font-size: 11px; }
+.forest-bar .fb-val { color: var(--f-mint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.forest-tagrow { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.forest-tagrow .tg-name { width: 90px; color: var(--text); font-size: 13px; }
+.forest-tagrow .tg-bar { flex: 1; height: 10px; background: var(--card-2); border-radius: 999px; overflow: hidden; }
+.forest-tagrow .tg-fill { height: 100%; background: var(--f-teal); border-radius: 999px; }
+.forest-tagrow .tg-val { width: 70px; text-align: right; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* achievements */
+.forest-badges { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+.forest-badge {
+  background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+  padding: 18px 16px; text-align: center;
+}
+.forest-badge.locked { opacity: .45; filter: grayscale(.6); }
+.forest-badge .fb-emoji { font-size: 30px; margin-bottom: 6px; }
+.forest-badge .fb-name { font-weight: 700; }
+.forest-badge .fb-desc { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.forest-badge .fb-date { color: var(--f-teal); font-size: 11px; margin-top: 6px; }
+
+/* distractions modal */
+.forest-fd-list { max-height: 180px; overflow-y: auto; text-align: left; }
+.fd-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 10px; border-radius: 8px; background: var(--card-2); margin-bottom: 5px; font-size: 13px;
+}
+.fd-item button { background: none; border: none; color: var(--muted-2); cursor: pointer; }
+.fd-item button:hover { color: #e23a3a; }
+
+/* result modal + breathing */
+.forest-result-card { text-align: center; }
+.forest-result-tree { width: 160px; height: 160px; margin: 0 auto; }
+.forest-result-tree svg { width: 100%; height: 100%; }
+.forest-result-coins { color: #f5c542; font-weight: 800; font-size: 18px; margin: 8px 0; }
+.forest-result-ach { color: var(--f-leaf); font-size: 13px; margin: 3px 0; }
+
+.forest-breathe {
+  position: fixed; inset: 0; z-index: 300;
+  background: radial-gradient(circle at 50% 45%, #1d5c2e, #0d2a14 75%);
+  display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 30px;
+}
+.forest-breathe.hidden { display: none; }
+.forest-breathe-circle {
+  width: 140px; height: 140px; border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #8ED320, #3FA98F);
+  animation: fbreathe 8s ease-in-out infinite;
+  box-shadow: 0 0 80px rgba(142, 211, 32, .35);
+}
+@keyframes fbreathe { 0%, 100% { transform: scale(.6); } 50% { transform: scale(1.15); } }
+.forest-breathe-text { color: var(--f-mint); font-size: 22px; font-weight: 600; letter-spacing: 1px; }
+.forest-breathe-close {
+  position: absolute; top: 56px; right: 24px;
+  background: none; border: none; color: rgba(230, 254, 236, .6); font-size: 22px; cursor: pointer;
+}
+.forest-breathe-close:hover { color: #fff; }

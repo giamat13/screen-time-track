@@ -18,10 +18,13 @@ const store = require('./store');
 const { Tracker } = require('./tracker');
 const browserBridge = require('./browserBridge');
 const { BreakReminder } = require('./breakReminder');
+const { createForestEngine, SPECIES: FOREST_SPECIES, ACHIEVEMENTS: FOREST_ACHIEVEMENTS } = require('./forest');
 
 let win = null;
 let tray = null;
 let tracker = null;
+let forest = null;
+let forestTicker = null;
 let breakReminder = null;
 let isQuitting = false;
 let locked = false;
@@ -49,6 +52,7 @@ function bootstrap() {
     applyAutoLaunch(store.getSettings().autoLaunch);
     browserBridge.start();
     startTracker();
+    startForest();
     startBreakReminder();
     startReminderScheduler();
 
@@ -63,6 +67,7 @@ function bootstrap() {
 
   app.on('before-quit', () => {
     isQuitting = true;
+    if (forestTicker) clearInterval(forestTicker);
     if (tracker) tracker.stop();
     if (breakReminder) breakReminder.stop();
     if (reminderScheduler) clearInterval(reminderScheduler);
@@ -188,10 +193,30 @@ function startTracker() {
     getPaused: isPaused,
     getBrowserState: () => browserBridge.getState(),
     onTick: (payload) => {
+      if (forest && payload && payload.currentApp) forest.onForegroundApp(payload.currentApp);
       if (win && !win.isDestroyed()) win.webContents.send('tick', payload);
     }
   });
   tracker.start();
+}
+
+// ---- forest focus sessions -------------------------------------------------
+function startForest() {
+  forest = createForestEngine({
+    store,
+    notify: (title, body) => {
+      try { new Notification({ title, body }).show(); } catch (e) { /* headless */ }
+    },
+    sendEvent: (channel, payload) => {
+      if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+    }
+  });
+  // A leftover snapshot means the app was killed mid-session — that tree died.
+  const crashed = forest.recoverCrashed();
+  if (crashed) {
+    try { new Notification({ title: 'Your tree died 🥀', body: 'The app closed during your focus session.' }).show(); } catch (e) { /* ignore */ }
+  }
+  forestTicker = setInterval(() => forest.tick(), 1000);
 }
 
 function setTracking(on) {
@@ -380,6 +405,37 @@ function setupIpc() {
   ipcMain.handle('habits:delete', (_e, id) => store.deleteHabit(id));
   ipcMain.handle('habits:log', (_e, id, amount, when) => store.logHabit(id, amount, when));
   ipcMain.handle('habits:pause', (_e, id) => store.toggleHabitPause(id));
+
+  // ---- forest ----
+  ipcMain.handle('forest:getState', () => ({
+    session: forest.liveView(),
+    data: store.getForestData(),
+    species: FOREST_SPECIES,
+    achievementDefs: FOREST_ACHIEVEMENTS
+  }));
+  ipcMain.handle('forest:start', (_e, opts) => forest.start(opts || {}));
+  ipcMain.handle('forest:pause', () => forest.pause());
+  ipcMain.handle('forest:resume', () => forest.resume());
+  ipcMain.handle('forest:giveup', () => forest.giveup());
+  ipcMain.handle('forest:finish', () => forest.finish());
+  ipcMain.handle('forest:buySpecies', (_e, id) => {
+    const sp = FOREST_SPECIES.find((s) => s.id === id);
+    if (!sp) return { ok: false, reason: 'unknown' };
+    const res = store.forestBuySpecies(id, sp.price);
+    if (res.ok) forest.checkAchievements(); // species-4
+    return res;
+  });
+  ipcMain.handle('forest:selectSpecies', (_e, id) => store.forestSelectSpecies(id));
+  ipcMain.handle('forest:setDistractions', (_e, d) => store.forestSetDistractions(d || {}));
+  ipcMain.handle('forest:setTags', (_e, tags) => store.forestSetTags(tags));
+  ipcMain.handle('forest:setSettings', (_e, partial) => store.forestSetSettings(partial));
+  ipcMain.handle('forest:tasks:add', (_e, title) => store.forestAddTask(title));
+  ipcMain.handle('forest:tasks:toggle', (_e, id) => {
+    const t = store.forestToggleTask(id);
+    if (t && t.done) forest.checkAchievements(); // tasks-10
+    return t;
+  });
+  ipcMain.handle('forest:tasks:delete', (_e, id) => store.forestDeleteTask(id));
 
   ipcMain.handle('win:control', (_e, action) => {
     if (!win) return;
