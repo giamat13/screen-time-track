@@ -204,6 +204,15 @@ function debugSubtractToday(seconds) {
   return getToday();
 }
 
+// DEBUG: grant extra streak freezers to a habit (on top of the earned ones).
+function debugAddHabitFreezers(id, count) {
+  const h = (data.habits || []).find((x) => x.id === id);
+  if (!h) return null;
+  h.freezerBonus = Math.max(0, (h.freezerBonus || 0) + (Math.round(Number(count)) || 0));
+  flush();
+  return enrichHabit(h);
+}
+
 // ---- "Not Me" sessions (who was using the computer while tracking was off) ----
 function startOtherUser(name) {
   if (!data.otherUsers) data.otherUsers = [];
@@ -490,7 +499,7 @@ function deleteReminder(id) {
 const HABIT_XP_PER_UNIT = { count: 10, minutes: 1, custom: 10 };
 const HABIT_TARGET_MAX = { count: 50, minutes: 1440, custom: 100 };
 const HABIT_FREEZERS_START = 3;   // each habit starts with this many freeze periods
-const HABIT_FREEZER_EVERY  = 7;   // earn one more freeze period every N consecutive met periods
+const HABIT_FREEZER_EVERY  = 3;   // earn one more freeze period every N consecutive met periods
 
 // Cumulative XP needed grows by a fixed step each level, giving a gentle ramp:
 // L2 @ 50xp, L3 @ 125, L4 @ 225, L5 @ 350 …
@@ -602,7 +611,7 @@ function weeklyStreakMap(map, target) {
 // Returns { streak, freezers, frozenPeriods } where frozenPeriods is an array of
 // date strings (YYYY-MM-DD) that were saved by a freeze.
 // Walks the full history forward so earnings and spends stay consistent.
-function calcHabitStreak(map, createdAt, target, weekly, pausedSet = new Set()) {
+function calcHabitStreak(map, createdAt, target, weekly, pausedSet = new Set(), bonusFreezers = 0) {
   const today = dateKey();
   const created = createdAt ? dateKey(new Date(createdAt)) : today;
 
@@ -623,7 +632,7 @@ function calcHabitStreak(map, createdAt, target, weekly, pausedSet = new Set()) 
     }
   }
 
-  let streak = 0, freezers = HABIT_FREEZERS_START, metRun = 0;
+  let streak = 0, freezers = HABIT_FREEZERS_START + Math.max(0, bonusFreezers), metRun = 0;
   const frozenPeriods = [];
 
   for (const p of periods) {
@@ -678,7 +687,7 @@ function enrichHabit(h) {
   const paused = pausedSet.has(currentPeriodKey(weekly));
 
   let periodCount, best;
-  const { streak, freezers, frozenPeriods } = calcHabitStreak(map, h.createdAt, effectiveTarget, weekly, pausedSet);
+  const { streak, freezers, frozenPeriods } = calcHabitStreak(map, h.createdAt, effectiveTarget, weekly, pausedSet, h.freezerBonus || 0);
   if (weekly) {
     periodCount = weekSumMap(map, weekStart());
     const metWeeks = [];
@@ -1088,6 +1097,7 @@ module.exports = {
   deleteHabit,
   logHabit,
   toggleHabitPause,
+  debugAddHabitFreezers,
   getForest,
   getForestData,
   forestAddTree,

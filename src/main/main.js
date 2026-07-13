@@ -405,6 +405,7 @@ function setupIpc() {
   ipcMain.handle('habits:delete', (_e, id) => store.deleteHabit(id));
   ipcMain.handle('habits:log', (_e, id, amount, when) => store.logHabit(id, amount, when));
   ipcMain.handle('habits:pause', (_e, id) => store.toggleHabitPause(id));
+  ipcMain.handle('debug:addHabitFreezers', (_e, id, count) => store.debugAddHabitFreezers(id, count));
 
   // ---- forest ----
   ipcMain.handle('forest:getState', () => ({

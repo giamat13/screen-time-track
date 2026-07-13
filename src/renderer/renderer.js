@@ -450,6 +450,8 @@ async function loadSettings() {
   $('#set-idle').value = String(s.idleThreshold || 30);
   $('#set-interval').value = String(s.pollInterval || 2);
   $('#set-brk-devmode').checked = !!(s.breakReminder && s.breakReminder.devMode);
+  const habits = await api.getHabits();
+  $('#dbg-freezer-habit').innerHTML = habits.map((h) => `<option value="${h.id}">${h.emoji} ${escapeHtml(h.name)}</option>`).join('');
 }
 $('#set-tracking').addEventListener('change', async (e) => { await api.setTracking(e.target.checked); });
 $('#set-studymode').addEventListener('change', (e) => toggleStudyMode(e.target.checked));
@@ -477,6 +479,15 @@ $('#dbg-other-btn').addEventListener('click', async () => {
   $('#dbg-other-min').value = '';
   toast(`🧪 ${min}m attributed to ${name}, removed from your time`);
   if (!$('#page-dashboard').classList.contains('hidden')) loadDashboard();
+});
+$('#dbg-freezer-btn').addEventListener('click', async () => {
+  const id = $('#dbg-freezer-habit').value;
+  const count = parseInt($('#dbg-freezer-count').value, 10);
+  if (!id) { toast('No habit to pick'); return; }
+  if (!count || count <= 0) { toast('Enter a count'); return; }
+  await api.debugAddHabitFreezers(id, count);
+  toast(`🧪 Added ${count} freezer${count === 1 ? '' : 's'}`);
+  if (!$('#page-habits').classList.contains('hidden')) loadHabits();
 });
 $('#set-brk-devmode').addEventListener('change', async (e) => {
   await api.setSettings({ breakReminder: { devMode: e.target.checked } });

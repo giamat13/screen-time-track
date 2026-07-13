@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('api', {
   deleteHabit: (id) => ipcRenderer.invoke('habits:delete', id),
   logHabit: (id, amount, when) => ipcRenderer.invoke('habits:log', id, amount, when),
   pauseHabit: (id) => ipcRenderer.invoke('habits:pause', id),
+  debugAddHabitFreezers: (id, count) => ipcRenderer.invoke('debug:addHabitFreezers', id, count),
 
   forestGetState: () => ipcRenderer.invoke('forest:getState'),
   forestStart: (opts) => ipcRenderer.invoke('forest:start', opts),
