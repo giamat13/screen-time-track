@@ -376,6 +376,7 @@ input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 3
   outline: none;
 }
 .text-input:focus { border-color: var(--accent); }
+.text-input.num { width: 88px; text-align: center; }
 .rem-empty { display: block; padding: 28px; text-align: center; }
 .rem-card { margin-bottom: 10px; }
 

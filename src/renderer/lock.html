@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Break</title>
+  <style>
+    :root { --bg:#07080c; --card:#12141c; --border:#242838; --text:#eef1f8; --muted:#8b93a7; --accent:#5b8cff; --amber:#f5a623; --danger:#ff5c6c; }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-user-select: none; user-select: none; cursor: default; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif; }
+    body { display: flex; align-items: center; justify-content: center; }
+    .wrap { text-align: center; padding: 40px; max-width: 720px; }
+    .emoji { font-size: 78px; line-height: 1; margin-bottom: 18px; }
+    h1 { font-size: 40px; font-weight: 700; margin-bottom: 10px; letter-spacing: .3px; }
+    .sub { font-size: 17px; color: var(--muted); margin-bottom: 34px; line-height: 1.6; }
+    .count { font-variant-numeric: tabular-nums; font-size: 108px; font-weight: 800; letter-spacing: 2px;
+      color: var(--accent); text-shadow: 0 0 44px rgba(91,140,255,.35); margin-bottom: 10px; }
+    .count-lbl { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 3px; margin-bottom: 40px; }
+    .actions { display: flex; flex-direction: column; gap: 14px; align-items: center; }
+    .btn { border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 16px;
+      padding: 15px 30px; border-radius: 14px; min-width: 340px; transition: .15s; font-weight: 600; }
+    .btn:enabled:hover { border-color: var(--accent); transform: translateY(-1px); }
+    .btn.approve { background: rgba(91,140,255,.12); border-color: rgba(91,140,255,.4); }
+    .btn.release { background: transparent; border-style: dashed; color: var(--muted); font-size: 13px; min-width: 200px; padding: 10px 20px; }
+    .btn:disabled { opacity: .45; }
+    .hint { font-size: 12.5px; color: var(--muted); margin-top: 8px; max-width: 380px; }
+    .hidden { display: none !important; }
+    .bar { width: 340px; height: 6px; background: #1b1e29; border-radius: 6px; overflow: hidden; margin: 0 auto 40px; }
+    .bar > i { display: block; height: 100%; background: linear-gradient(90deg,var(--accent),#8ab0ff); width: 100%; transition: width 1s linear; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="emoji" id="emoji">🔒</div>
+    <h1 id="title">זמן להפסקה</h1>
+    <p class="sub" id="sub">קום, מתח את הגוף, ותן לעיניים לנוח. אי אפשר לצאת עד שהזמן נגמר.</p>
+    <div class="count" id="count">05:00</div>
+    <div class="count-lbl">זמן שנותר</div>
+    <div class="bar"><i id="bar"></i></div>
+    <div class="actions">
+      <button class="btn approve hidden" id="approve">✋ אישרו לי להמשיך לשחק</button>
+      <div class="hint hidden" id="approve-hint"></div>
+      <button class="btn release" id="release">🔓 שחרר את המחשב</button>
+    </div>
+  </div>
+
+  <script src="lock.js"></script>
+</body>
+</html>

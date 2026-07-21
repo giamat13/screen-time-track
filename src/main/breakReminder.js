@@ -1,129 +1,298 @@
 const { spawn } = require('child_process');
 
-const PENALTY_FLOOR_MS = 60 * 1000;     // never shorten the next check below 1 minute
-const PENALTY_FLOOR_DEV_MS = 3 * 1000;  // ...except in dev mode, where 3s is fine
-const PENALTY_MAX_SKIPS = 4;            // cap the speed-up at 2^4 = 16x faster
-const BREAK_BASE_MIN = 5;          // suggested break length with no penalty
-const BREAK_PENALTY_STEP_MIN = 5;  // extra suggested break minutes added per skipped break
-const BREAK_MIN_MS = 5 * 60 * 1000;   // minimum time before next timer starts after "break"
-const BREAK_MIN_DEV_MS = 15 * 1000;   // same, in dev mode
 const AWAY_RESET_MS = 5 * 60 * 1000;  // away this long → the presence timer resets to full
 
+// The break/lock engine.
+//
+// Responsibilities:
+//   1. Presence timer — counts down while you're at the computer; when it hits
+//      zero it starts the alarm ("beeping") and asks you to take a break.
+//   2. Beep engine — a PowerShell [Console]::Beep loop with a timeout. Every
+//      beeping phase has a deadline; ignore it and it locks the machine.
+//   3. Lock state machine — drives a fullscreen kiosk lock window (created in
+//      main.js via the injected showLock/updateLock/hideLock callbacks).
+//   4. Telegram escalation — pressing "approve me to keep playing" pings the
+//      watchers; a veto reply from them re-locks / re-beeps based on how fast
+//      it arrived.
+//
+// main.js owns the actual BrowserWindow and Telegram client and injects them
+// as callbacks, so this module stays free of Electron imports.
 class BreakReminder {
-  constructor({ getSettings, powerMonitor, onPrompt }) {
+  constructor({ getSettings, powerMonitor, onPrompt, showLock, updateLock, hideLock, sendTelegram, notify, persistLock, clearLock }) {
     this._getSettings = getSettings;
     this._pm = powerMonitor;
-    this._onPrompt = typeof onPrompt === 'function' ? onPrompt : () => {};
-    this._tickTimer = null;
-    this._guardTimer = null;
+    this._onPrompt = fn(onPrompt);
+    this._showLock = fn(showLock);
+    this._updateLock = fn(updateLock);
+    this._hideLock = fn(hideLock);
+    this._sendTelegram = fn(sendTelegram);   // (text) => void, pings the watchers
+    this._notify = fn(notify);
+    this._persistLock = fn(persistLock);     // (state) => void, durably record an in-force break lock
+    this._clearLock = fn(clearLock);         // () => void, erase the persisted break lock
+
+    this._tick = null;                        // master 1s interval
     this._beepProc = null;
-    this._isBeeping = false;
-    this._nextCheckAt = null;
-    this._remainingMs = null;     // ms left on the presence timer (null = not started yet)
-    this._lastTickAt = null;      // timestamp of the previous tick, for measuring elapsed time
-    this._awayAt = null;          // when the user went idle (estimated)
-    this._skipCount = 0;          // consecutive "no energy" skips since the last real break
-    this._owedExtraMin = 0;       // extra break minutes owed because of skips
-    this._breakEndAt = null;      // earliest time the presence timer may restart after a "break"
+
+    this._mode = 'idle';                      // 'idle' | 'beeping' | 'locked'
+
+    // presence timer
+    this._remainingMs = null;                 // ms left (null = not started / reset)
+    this._lastTickAt = null;
+    this._awayAt = null;
+
+    // beeping phase
+    this._beepUntilAt = null;                 // when the beep phase auto-locks
+    this._beepOnTimeout = null;               // () => void
+    this._promptPhase = 'reminder';           // 'reminder' | 'escalation'
+    this._allowApprove = true;                // show the approve button in the prompt?
+
+    // lock phase
+    this._lockMode = null;                    // 'break' | 'approve-short'
+    this._lockStartAt = null;
+    this._lockUntilAt = null;
+    this._lockApproved = false;               // approve pressed on the lock screen already
+
+    // telegram escalation
+    this._approveSentAt = null;               // when the last "approve me" ping went out
+    this._escalationArmed = false;
   }
 
-  start() {
-    this._startTracking();
-  }
+  start() { if (!this._tick) this._tick = setInterval(() => this._onTick(), 1000); }
 
   stop() {
-    if (this._tickTimer) { clearInterval(this._tickTimer); this._tickTimer = null; }
-    if (this._guardTimer) { clearInterval(this._guardTimer); this._guardTimer = null; }
+    if (this._tick) { clearInterval(this._tick); this._tick = null; }
     this._killBeepProc();
-    this._isBeeping = false;
-    this._nextCheckAt = null;
+    this._hideLock();
+    this._mode = 'idle';
     this._remainingMs = null;
     this._lastTickAt = null;
     this._awayAt = null;
-    this._breakEndAt = null;
-    // penalty state (skipCount / owedExtraMin) is intentionally preserved across
-    // restart() so tweaking the alarm sliders doesn't wipe an outstanding debt.
+    this._beepUntilAt = null;
+    this._beepOnTimeout = null;
+    this._lockMode = null;
+    this._lockStartAt = null;
+    this._lockUntilAt = null;
+    this._lockApproved = false;
+    this._escalationArmed = false;
+    this._approveSentAt = null;
   }
 
+  // Settings changed — keep the loop alive but forget an in-flight presence
+  // countdown so new intervals take effect. Never yank an active lock/beep.
   restart() {
-    this.stop();
+    if (this._mode === 'idle') { this._remainingMs = null; this._lastTickAt = null; }
     this.start();
   }
 
+  // Re-engage a break lock that was still in force when the app last exited — a
+  // crash, a normal quit, or a full power-off. Called once at startup with
+  // whatever was persisted. The stored end time is absolute wall-clock, so time
+  // spent powered off already counted toward the break: if the whole break
+  // elapsed while off there's nothing left to lock, otherwise we lock for the
+  // remainder. Rebooting to escape therefore buys nothing.
+  resumeLock(saved) {
+    if (!saved || saved.mode !== 'break') return false;
+    const until = int(saved.lockUntilAt, 0);
+    if (until - Date.now() <= 0) { this._clearLock(); return false; } // break already over
+    this.start();
+    this._mode = 'locked';
+    this._lockMode = 'break';
+    this._lockStartAt = Date.now();
+    this._lockUntilAt = until;           // keep the original absolute end — off-time counted
+    this._lockApproved = false;
+    this._escalationArmed = false;
+    this._persistBreakLock();
+    this._showLock(this.getLockState());
+    return true;
+  }
+
   testBeep() {
-    const s = this._getSettings().breakReminder || {};
-    const freq = s.beepFrequency || 1000;
-    const dur = s.beepDuration || 200;
-    const script = `try{[Console]::Beep(${freq},${dur})}catch{}`;
-    const p = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true });
-    p.on('error', () => {});
+    const s = this._brk();
+    const script = `try{[Console]::Beep(${int(s.beepFrequency, 1000)},${int(s.beepDuration, 200)})}catch{}`;
+    spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true })
+      .on('error', () => {});
   }
 
   getStatus() {
+    const s = this._brk();
     return {
-      isBeeping: this._isBeeping,
-      nextCheckAt: this._nextCheckAt,
-      skipCount: this._skipCount,
-      owedExtraMinutes: this._owedExtraMin,
-      recommendedBreakMinutes: BREAK_BASE_MIN + this._owedExtraMin,
+      isBeeping: this._mode === 'beeping',
+      isLocked: this._mode === 'locked',
+      mode: this._mode,
+      nextCheckAt: this._mode === 'idle' && this._remainingMs !== null
+        ? Date.now() + Math.max(0, this._remainingMs) : null,
+      recommendedBreakMinutes: int(s.breakLockMinutes, 5),
+      telegramReady: !!(s.telegram && s.telegram.enabled && s.telegram.botToken && (s.telegram.chatIds || []).length),
     };
   }
 
-  // Resolve an active alarm from the in-app prompt. choice ∈ 'break' | 'cant' | 'skip'.
-  respond(choice) {
-    if (!this._isBeeping) return this.getStatus();
-    if (choice === 'break') {
-      // you're actually leaving — wipe the debt and enforce a minimum break window
-      this._skipCount = 0;
-      this._owedExtraMin = 0;
-      const s = this._getSettings().breakReminder || {};
-      this._breakEndAt = Date.now() + (s.devMode ? BREAK_MIN_DEV_MS : BREAK_MIN_MS);
-    } else if (choice === 'skip') {
-      // no energy — penalty: ring back twice as fast and owe more rest next time
-      this._skipCount = Math.min(this._skipCount + 1, PENALTY_MAX_SKIPS);
-      this._owedExtraMin += BREAK_PENALTY_STEP_MIN;
-    }
-    // 'cant' — snooze with no penalty: leave skipCount / owedExtraMin untouched
-    this._stopBeeping();
+  // Payload for the in-app prompt shown when the alarm is ringing.
+  promptPayload() {
+    const s = this._brk();
+    return {
+      phase: this._promptPhase,
+      allowApprove: this._allowApprove && !!(s.telegram && s.telegram.enabled),
+      recommendedBreakMinutes: int(s.breakLockMinutes, 5),
+      isBeeping: this._mode === 'beeping',
+    };
+  }
+
+  // ---- external commands ---------------------------------------------------
+
+  // /lock or "test the flow" — behave exactly like the presence timer firing.
+  forcePrompt() {
+    if (this._mode === 'locked') return this.getStatus();
+    this._startBeeping({ phase: 'reminder', allowApprove: true, timeoutMs: this._ignoreBeepMs(), onTimeout: () => this._lock('break') });
     return this.getStatus();
   }
 
-  _startTracking() {
-    const s = this._getSettings().breakReminder || {};
-    if (!s.enabled) { this._nextCheckAt = null; this._remainingMs = null; return; }
-    if (this._tickTimer) return;
-    this._remainingMs = null;
-    this._lastTickAt = null;
-    this._tickTimer = setInterval(() => this._onTick(), 1000);
+  // Answer the in-app prompt. choice ∈ 'break' | 'approve' | 'lockNow'.
+  respond(choice) {
+    if (choice === 'break' || choice === 'lockNow') {
+      this._lock('break');
+    } else if (choice === 'approve') {
+      this._approveFromPrompt();
+    }
+    return this.getStatus();
   }
 
-  // Base interval before any penalty, in ms. Dev mode uses a seconds-based value.
+  // Approve button pressed *on the lock screen* (during a full break lock).
+  approveFromLock() {
+    if (this._mode !== 'locked' || this._lockMode !== 'break') return this.getLockState();
+    const s = this._brk();
+    const minMs = int(s.approveMinLockSeconds, 20) * 1000;
+    const elapsed = Date.now() - (this._lockStartAt || Date.now());
+    this._approveSend();                 // ping watchers + arm escalation
+    this._lockApproved = true;
+    if (elapsed >= minMs) {
+      this._unlock();                    // already stood up long enough
+    } else {
+      // shorten the countdown to the remaining seconds needed to reach the
+      // minimum — without resetting it back up to the full minimum.
+      this._lockUntilAt = (this._lockStartAt || Date.now()) + minMs;
+      this._persistBreakLock();          // keep the persisted end time in sync
+    }
+    return this.getLockState();
+  }
+
+  // Always-available panic escape ("release the computer"). Unconditionally
+  // ends any lock — the owner's safety hatch so a test run can never trap them.
+  // ponytail: this makes the lock defeatable by anyone at the keyboard; gate it
+  // behind devMode if it's ever used on someone else's machine.
+  release() {
+    this._unlock();
+    this._escalationArmed = false;
+    return { locked: false };
+  }
+
+  getLockState() {
+    if (this._mode !== 'locked') return { locked: false };
+    const s = this._brk();
+    const now = Date.now();
+    const minMs = int(s.approveMinLockSeconds, 20) * 1000;
+    const elapsed = now - (this._lockStartAt || now);
+    const isBreak = this._lockMode === 'break';
+    return {
+      locked: true,
+      mode: this._lockMode,
+      remainingMs: Math.max(0, (this._lockUntilAt || now) - now),
+      totalMs: Math.max(0, (this._lockUntilAt || now) - (this._lockStartAt || now)),
+      showApprove: isBreak && !this._lockApproved && !!(s.telegram && s.telegram.enabled),
+      canApproveNow: elapsed >= minMs,
+      minApproveSeconds: int(s.approveMinLockSeconds, 20),
+    };
+  }
+
+  // A negative / veto reply arrived from a watcher on Telegram.
+  onTelegramVeto() {
+    if (!this._escalationArmed) return;
+    this._escalationArmed = false;
+    const s = this._brk();
+    const elapsedMs = Date.now() - (this._approveSentAt || Date.now());
+
+    if (elapsedMs <= int(s.cancelWindowSeconds, 10) * 1000) {
+      this._lock('break');                 // instant veto
+      return;
+    }
+    let beepSec;
+    if (elapsedMs <= int(s.tier1Minutes, 1) * 60000) beepSec = int(s.tier1BeepSeconds, 30);
+    else if (elapsedMs <= int(s.tier2Minutes, 5) * 60000) beepSec = int(s.tier2BeepSeconds, 60);
+    else if (elapsedMs <= int(s.tier3Minutes, 10) * 60000) beepSec = int(s.tier3BeepSeconds, 300);
+    else beepSec = int(s.tier3PlusBeepSeconds, 300);
+
+    // Beep for a grace period, then lock — unless the user enters the app and
+    // chooses to take a break (or lock now) before the timeout.
+    this._startBeeping({ phase: 'escalation', allowApprove: false, timeoutMs: beepSec * 1000, onTimeout: () => this._lock('break') });
+  }
+
+  // ---- internals -----------------------------------------------------------
+
+  _brk() { return (this._getSettings() || {}).breakReminder || {}; }
+
+  _ignoreBeepMs() {
+    const s = this._brk();
+    if (s.devMode) return Math.max(3000, int(s.checkIntervalSeconds, 10) * 1000);
+    return int(s.ignoreBeepMinutes, 5) * 60 * 1000;
+  }
+
   _baseIntervalMs() {
-    const s = this._getSettings().breakReminder || {};
-    if (s.devMode) return Math.max(1, s.checkIntervalSeconds || 10) * 1000;
-    return (s.checkIntervalMinutes || 60) * 60 * 1000;
+    const s = this._brk();
+    if (s.devMode) return Math.max(1, int(s.checkIntervalSeconds, 10)) * 1000;
+    return int(s.checkIntervalMinutes, 60) * 60 * 1000;
   }
 
-  // Next check interval in ms, shortened by 2^skipCount for skipped breaks.
-  _effectiveIntervalMs() {
-    const s = this._getSettings().breakReminder || {};
-    const n = Math.min(this._skipCount, PENALTY_MAX_SKIPS);
-    const floor = s.devMode ? PENALTY_FLOOR_DEV_MS : PENALTY_FLOOR_MS;
-    return Math.max(floor, Math.round(this._baseIntervalMs() / Math.pow(2, n)));
+  _approveSend() {
+    const s = this._brk();
+    const mins = int(s.breakLockMinutes, 5);
+    this._sendTelegram(
+      `🎮 "Approve me to keep playing" was just pressed on Screen Time.\n` +
+      `Reply /cancel (or: no / אסור / לא / stop) if they should NOT keep playing.\n` +
+      `The sooner you reply, the harder it locks back.`
+    );
+    this._approveSentAt = Date.now();
+    this._escalationArmed = true;
+    this._notify('Watchers notified', 'They were pinged on Telegram. A veto will lock you back.');
+    void mins;
   }
 
-  // The timer model, in three rules:
+  _approveFromPrompt() {
+    this._approveSend();
+    this._lock('approve-short');
+  }
+
+  // Master 1s tick — one of three modes is active.
+  _onTick() {
+    if (this._mode === 'locked') return this._tickLock();
+    if (this._mode === 'beeping') return this._tickBeep();
+    return this._tickPresence();
+  }
+
+  _tickLock() {
+    const now = Date.now();
+    if (this._lockUntilAt !== null && now >= this._lockUntilAt) {
+      this._unlock();
+      return;
+    }
+    this._updateLock(this.getLockState());
+  }
+
+  _tickBeep() {
+    if (this._beepUntilAt !== null && Date.now() >= this._beepUntilAt) {
+      const cb = this._beepOnTimeout;
+      this._beepOnTimeout = null;
+      if (cb) cb(); else this._stopBeeping();
+    }
+  }
+
+  // The presence model:
   //   1. While you're at the computer, the timer counts down.
   //   2. The moment you leave, it pauses (frozen at whatever was left).
-  //   3. If you're away 5+ minutes, it resets to full for when you return.
-  // When the timer hits 0 the alarm fires (unchanged).
-  _onTick() {
-    if (this._isBeeping) return; // guard timer is in charge while beeping
-    const settings = this._getSettings();
+  //   3. Away 5+ minutes → it resets to full for when you return.
+  _tickPresence() {
+    const settings = this._getSettings() || {};
     const s = settings.breakReminder || {};
     if (!s.enabled) {
-      this._nextCheckAt = null; this._remainingMs = null;
-      this._lastTickAt = null; this._awayAt = null;
+      this._remainingMs = null; this._lastTickAt = null; this._awayAt = null;
       return;
     }
 
@@ -134,95 +303,103 @@ class BreakReminder {
     this._lastTickAt = now;
 
     if (idleSecs >= idleThreshold) {
-      // Rule 2: away — pause the timer.
       if (this._awayAt === null) {
-        // First tick we notice the absence. Back-date it to when they actually
-        // left and refund the countdown that ran during the idle grace period,
-        // so the pause is accurate to the moment they walked away.
         this._awayAt = now - idleSecs * 1000;
         if (this._remainingMs !== null) {
-          this._remainingMs = Math.min(this._effectiveIntervalMs(), this._remainingMs + idleSecs * 1000);
-          this._nextCheckAt = now + this._remainingMs;
+          this._remainingMs = Math.min(this._baseIntervalMs(), this._remainingMs + idleSecs * 1000);
         }
       }
-      // Rule 3: away long enough → reset to full for when they return.
-      if (now - this._awayAt >= AWAY_RESET_MS) {
-        this._remainingMs = null;
-        this._nextCheckAt = null;
-        this._skipCount = 0;
-        this._owedExtraMin = 0;
-      }
-      return; // frozen while away
+      if (now - this._awayAt >= AWAY_RESET_MS) { this._remainingMs = null; }
+      return;
     }
 
-    // present at the computer
     this._awayAt = null;
+    if (this._remainingMs === null) this._remainingMs = this._baseIntervalMs();
+    else this._remainingMs -= elapsed;
 
-    // After clicking "taking a break", enforce a minimum break window before resuming.
-    if (this._breakEndAt !== null) {
-      if (now < this._breakEndAt) { this._remainingMs = null; return; }
-      this._breakEndAt = null; // minimum time elapsed — allow timer to start
-    }
-
-    // Rule 1: count down while present.
-    if (this._remainingMs === null) {
-      this._remainingMs = this._effectiveIntervalMs(); // fresh start / after a reset
-    } else {
-      this._remainingMs -= elapsed;
-    }
-
-    this._nextCheckAt = now + Math.max(0, this._remainingMs);
     if (this._remainingMs <= 0) {
-      this._startBeeping();
+      this._startBeeping({ phase: 'reminder', allowApprove: true, timeoutMs: this._ignoreBeepMs(), onTimeout: () => this._lock('break') });
     }
   }
 
-  _startBeeping() {
-    if (this._isBeeping) return;
-    this._isBeeping = true;
-    const s = this._getSettings().breakReminder || {};
-    const freq = s.beepFrequency || 1000;
-    const dur = s.beepDuration || 200;
-    const interval = Math.round((s.beepIntervalSeconds || 0.4) * 1000);
+  _startBeeping({ phase, allowApprove, timeoutMs, onTimeout }) {
+    // Restart the beep loop cleanly even if one is already running (e.g. a
+    // reminder beep escalating into a veto beep).
+    this._killBeepProc();
+    this._mode = 'beeping';
+    this._promptPhase = phase;
+    this._allowApprove = allowApprove;
+    this._beepUntilAt = timeoutMs ? Date.now() + timeoutMs : null;
+    this._beepOnTimeout = onTimeout || (() => this._stopBeeping());
 
+    const s = this._brk();
+    const freq = int(s.beepFrequency, 1000);
+    const dur = int(s.beepDuration, 200);
+    const interval = Math.round(num(s.beepIntervalSeconds, 0.4) * 1000);
     const script = `while($true){try{[Console]::Beep(${freq},${dur})}catch{};Start-Sleep -Milliseconds ${interval}}`;
-    this._beepProc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      windowsHide: true,
-      detached: false,
-    });
+    this._beepProc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, detached: false });
     this._beepProc.on('error', () => {});
     this._beepProc.on('exit', () => { this._beepProc = null; });
 
-    // The alarm now only stops when the user answers the in-app prompt (or disables
-    // the feature). The guard just catches the "disabled while ringing" case.
-    this._guardTimer = setInterval(() => this._guard(), 1000);
-
-    this._onPrompt(this._promptPayload());
-  }
-
-  _promptPayload() {
-    return {
-      skipCount: this._skipCount,
-      owedExtraMinutes: this._owedExtraMin,
-      recommendedBreakMinutes: BREAK_BASE_MIN + this._owedExtraMin,
-      shortened: this._skipCount > 0,
-    };
-  }
-
-  _guard() {
-    const s = this._getSettings().breakReminder || {};
-    if (!s.enabled) this._stopBeeping();
+    this._onPrompt(this.promptPayload());
   }
 
   _stopBeeping() {
-    if (this._guardTimer) { clearInterval(this._guardTimer); this._guardTimer = null; }
     this._killBeepProc();
-    this._isBeeping = false;
-    // restart the presence timer from scratch; the next interval is shortened
-    // automatically if skipCount > 0 (see _effectiveIntervalMs).
+    this._beepUntilAt = null;
+    this._beepOnTimeout = null;
+    if (this._mode === 'beeping') {
+      this._mode = 'idle';
+      this._remainingMs = null;      // restart presence countdown from scratch
+      this._lastTickAt = null;
+    }
+  }
+
+  // Enter a fullscreen kiosk lock.
+  //   'break'         — the real break; approve (min-lock) + debug buttons.
+  //   'approve-short' — brief "get up and check" lock after pressing approve.
+  _lock(mode) {
+    this._killBeepProc();
+    this._beepUntilAt = null;
+    this._beepOnTimeout = null;
+    if (mode === 'break') this._escalationArmed = false; // taking the real break clears any pending veto
+
+    const s = this._brk();
+    let durMs;
+    if (mode === 'break') {
+      // In dev mode the break lock is seconds (same clock as the presence timer),
+      // never the real 5 minutes — otherwise a quick test traps you for real.
+      durMs = s.devMode ? this._baseIntervalMs() : int(s.breakLockMinutes, 5) * 60 * 1000;
+    } else durMs = int(s.approveShortLockSeconds, 10) * 1000;
+
+    this._mode = 'locked';
+    this._lockMode = mode;
+    this._lockStartAt = Date.now();
+    this._lockUntilAt = Date.now() + durMs;
+    this._lockApproved = false;
+    this._persistBreakLock();   // no-op for the brief approve-short lock
+    this._showLock(this.getLockState());
+  }
+
+  // Durably record an in-force break lock by its absolute end time so it can be
+  // restored after a reboot. Only the real break persists — the short
+  // "get up and check" approve lock is not worth surviving a restart.
+  _persistBreakLock() {
+    if (this._mode !== 'locked' || this._lockMode !== 'break') return;
+    this._persistLock({ mode: 'break', lockUntilAt: this._lockUntilAt });
+  }
+
+  _unlock() {
+    this._clearLock();
+    this._hideLock();
+    this._mode = 'idle';
+    this._lockMode = null;
+    this._lockStartAt = null;
+    this._lockUntilAt = null;
+    this._lockApproved = false;
+    // resume presence countdown fresh
     this._remainingMs = null;
     this._lastTickAt = null;
-    this._nextCheckAt = null;
   }
 
   _killBeepProc() {
@@ -231,7 +408,6 @@ class BreakReminder {
     this._beepProc.removeAllListeners('exit');
     try { this._beepProc.kill(); } catch {}
     this._beepProc = null;
-    // taskkill is more reliable than .kill() on Windows for terminating child processes
     if (pid) {
       try {
         spawn('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true, detached: true })
@@ -240,5 +416,9 @@ class BreakReminder {
     }
   }
 }
+
+function fn(f) { return typeof f === 'function' ? f : () => {}; }
+function int(v, d) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : d; }
+function num(v, d) { const n = parseFloat(v); return Number.isFinite(n) ? n : d; }
 
 module.exports = { BreakReminder };

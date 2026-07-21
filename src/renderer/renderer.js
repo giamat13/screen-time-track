@@ -502,8 +502,16 @@ async function loadBreaks() {
   brkSettings = Object.assign({
     enabled: false, checkIntervalMinutes: 60,
     devMode: false, checkIntervalSeconds: 10,
-    beepFrequency: 1000, beepDuration: 200, beepIntervalSeconds: 0.4
+    beepFrequency: 1000, beepDuration: 200, beepIntervalSeconds: 0.4,
+    breakLockMinutes: 5, ignoreBeepMinutes: 5,
+    approveShortLockSeconds: 10, approveMinLockSeconds: 20,
+    cancelWindowSeconds: 10,
+    tier1Minutes: 1, tier1BeepSeconds: 30,
+    tier2Minutes: 5, tier2BeepSeconds: 60,
+    tier3Minutes: 10, tier3BeepSeconds: 300, tier3PlusBeepSeconds: 300,
   }, s.breakReminder || {});
+  const tg = Object.assign({ enabled: false, botToken: '', chatIds: [] },
+    (s.breakReminder && s.breakReminder.telegram) || {});
 
   $('#brk-enabled').checked = !!brkSettings.enabled;
   $('#brk-interval').value = brkSettings.checkIntervalMinutes;
@@ -511,6 +519,28 @@ async function loadBreaks() {
   $('#brk-freq').value = brkSettings.beepFrequency;
   $('#brk-dur').value = brkSettings.beepDuration;
   $('#brk-beep-int').value = brkSettings.beepIntervalSeconds;
+
+  // lock
+  $('#brk-lock-min').value = brkSettings.breakLockMinutes;
+  $('#brk-ignore-min').value = brkSettings.ignoreBeepMinutes;
+  $('#brk-approve-short').value = brkSettings.approveShortLockSeconds;
+  $('#brk-approve-min').value = brkSettings.approveMinLockSeconds;
+
+  // escalation
+  $('#brk-cancel-win').value = brkSettings.cancelWindowSeconds;
+  $('#brk-t1-min').value = brkSettings.tier1Minutes;
+  $('#brk-t1-beep').value = brkSettings.tier1BeepSeconds;
+  $('#brk-t2-min').value = brkSettings.tier2Minutes;
+  $('#brk-t2-beep').value = brkSettings.tier2BeepSeconds;
+  $('#brk-t3-min').value = brkSettings.tier3Minutes;
+  $('#brk-t3-beep').value = brkSettings.tier3BeepSeconds;
+  $('#brk-t3plus-beep').value = brkSettings.tier3PlusBeepSeconds;
+
+  // telegram
+  $('#tg-enabled').checked = !!tg.enabled;
+  $('#tg-token').value = tg.botToken || '';
+  $('#tg-chatids').value = (tg.chatIds || []).join(', ');
+
   applyDevRows(!!brkSettings.devMode);
   updateBrkLabels();
   await updateBrkStatus();
@@ -519,11 +549,21 @@ async function loadBreaks() {
   brkStatusInterval = setInterval(updateBrkStatus, 10000);
 }
 
+function numVal(id, fallback) {
+  const n = parseFloat($(`#${id}`).value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 async function updateBrkStatus() {
   const status = await api.getBreakStatus();
   if (!brkSettings.enabled) {
     $('#brk-status-title').textContent = 'Disabled';
     $('#brk-status-sub').textContent = 'Enable to receive break reminders';
+    return;
+  }
+  if (status.isLocked) {
+    $('#brk-status-title').textContent = '🔒 Locked';
+    $('#brk-status-sub').textContent = 'The break lock is active';
     return;
   }
   if (status.isBeeping) {
@@ -536,9 +576,8 @@ async function updateBrkStatus() {
     const label = remMs < 60000
       ? `${Math.max(0, Math.round(remMs / 1000))}s`
       : `${Math.round(remMs / 60000)}m`;
-    const owe = status.owedExtraMinutes > 0 ? ` · you owe +${status.owedExtraMinutes}m of rest` : '';
     $('#brk-status-title').textContent = `Next reminder in ${label}`;
-    $('#brk-status-sub').textContent = `Will only ring if you're at the computer during the check${owe}`;
+    $('#brk-status-sub').textContent = `Will only ring if you're at the computer during the check`;
   } else {
     $('#brk-status-title').textContent = 'Active';
     $('#brk-status-sub').textContent = 'Waiting for the next check cycle';
@@ -563,7 +602,8 @@ function applyDevRows(dev) {
 }
 
 async function saveBrkSettings() {
-  // devMode is owned by the Settings page; omit it so the deep-merge preserves it
+  // devMode is owned by the Settings page; omit it so the deep-merge preserves it.
+  // telegram is saved separately (saveTelegram) so we don't clobber it here.
   brkSettings = {
     enabled: $('#brk-enabled').checked,
     checkIntervalMinutes: parseInt($('#brk-interval').value),
@@ -571,9 +611,32 @@ async function saveBrkSettings() {
     beepFrequency: parseInt($('#brk-freq').value),
     beepDuration: parseInt($('#brk-dur').value),
     beepIntervalSeconds: parseFloat($('#brk-beep-int').value),
+
+    breakLockMinutes: numVal('brk-lock-min', 5),
+    ignoreBeepMinutes: numVal('brk-ignore-min', 5),
+    approveShortLockSeconds: numVal('brk-approve-short', 10),
+    approveMinLockSeconds: numVal('brk-approve-min', 20),
+
+    cancelWindowSeconds: numVal('brk-cancel-win', 10),
+    tier1Minutes: numVal('brk-t1-min', 1),
+    tier1BeepSeconds: numVal('brk-t1-beep', 30),
+    tier2Minutes: numVal('brk-t2-min', 5),
+    tier2BeepSeconds: numVal('brk-t2-beep', 60),
+    tier3Minutes: numVal('brk-t3-min', 10),
+    tier3BeepSeconds: numVal('brk-t3-beep', 300),
+    tier3PlusBeepSeconds: numVal('brk-t3plus-beep', 300),
   };
   await api.setSettings({ breakReminder: brkSettings });
   await updateBrkStatus();
+}
+
+async function saveTelegram() {
+  const chatIds = $('#tg-chatids').value.split(',').map((x) => x.trim()).filter(Boolean);
+  await api.setSettings({ breakReminder: { telegram: {
+    enabled: $('#tg-enabled').checked,
+    botToken: $('#tg-token').value.trim(),
+    chatIds,
+  } } });
 }
 
 $('#brk-enabled').addEventListener('change', saveBrkSettings);
@@ -583,20 +646,36 @@ $('#brk-test').addEventListener('click', () => api.testBreak());
   el.addEventListener('input', updateBrkLabels);
   el.addEventListener('change', saveBrkSettings);
 });
+[
+  'brk-lock-min', 'brk-ignore-min', 'brk-approve-short', 'brk-approve-min',
+  'brk-cancel-win', 'brk-t1-min', 'brk-t1-beep', 'brk-t2-min', 'brk-t2-beep',
+  'brk-t3-min', 'brk-t3-beep', 'brk-t3plus-beep',
+].forEach((id) => $(`#${id}`).addEventListener('change', saveBrkSettings));
+$('#brk-force').addEventListener('click', () => { api.forceBreak(); toast('🔒 Break prompt fired'); });
+
+['tg-enabled', 'tg-token', 'tg-chatids'].forEach((id) => $(`#${id}`).addEventListener('change', saveTelegram));
+$('#tg-test').addEventListener('click', async () => {
+  await saveTelegram();
+  const res = await api.telegramTest();
+  toast(res && res.ok ? '✉️ Test sent' : `❌ Test failed — ${(res && res.error) || 'check token & chat ids'}`);
+});
 
 // ---------- break alarm prompt ----------
 function showBreakModal(d) {
   d = d || {};
   const rec = d.recommendedBreakMinutes || 5;
-  $('#brk-modal-sub').textContent =
-    `You've been at the computer for a while. Step away for about ${rec} minutes and rest your eyes.`;
-  const note = $('#brk-modal-note');
-  if (d.owedExtraMinutes > 0) {
-    note.textContent = `⚠️ You skipped a break earlier — you now owe an extra ${d.owedExtraMinutes} minutes of rest.`;
-    note.classList.remove('hidden');
-  } else {
-    note.classList.add('hidden');
-  }
+  const escalation = d.phase === 'escalation';
+  $('#brk-modal-title').textContent = escalation ? '🔔 המשגיחים ענו — קדימה להפסקה' : 'זמן להפסקה!';
+  $('#brk-modal-sub').textContent = escalation
+    ? 'המחשב יינעל בקרוב. אפשר לנעול עכשיו או לקחת הפסקה מלאה.'
+    : `היית מול המחשב הרבה זמן. לחיצה על "אני לוקח הפסקה" תנעל את המחשב לכ-${rec} דקות.`;
+
+  // approve button only when telegram-based approval is available and we're in
+  // the initial reminder phase (not during a veto escalation beep).
+  $('#brk-approve-btn').classList.toggle('hidden', !(d.allowApprove && !escalation));
+  // "lock now" appears whenever we're beeping so you can end it early.
+  $('#brk-locknow-btn').classList.toggle('hidden', !escalation);
+  $('#brk-modal-note').classList.add('hidden');
   $('#break-modal').classList.remove('hidden');
 }
 

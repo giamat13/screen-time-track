@@ -75,6 +75,23 @@
     "Software\Microsoft\Windows\CurrentVersion\Run" \
     "Screen Time" \
     '"$INSTDIR\Screen Time.exe" --hidden'
+
+  ; ---- Lock-screen Task Manager block (best-effort; needs an elevated install) ----
+  ; If the user picked "Install for all users" the installer itself is running
+  ; elevated right now, so this succeeds and registers two on-demand Scheduled
+  ; Tasks — running as SYSTEM, so no further UAC prompt is ever needed — that
+  ; the app triggers via `schtasks /run` each time it locks/unlocks to flip the
+  ; machine-wide (HKLM) DisableTaskMgr policy. If the installer is NOT elevated
+  ; (a per-user install), both calls below simply fail silently — the app then
+  ; falls back to a weaker per-user (HKCU) block at runtime instead. Either way
+  ; the install itself is never blocked or delayed by this.
+  ; A start date in the past (/sd) with a one-time schedule (/sc once) means
+  ; the trigger has already elapsed and never fires on its own; the tasks only
+  ; ever run when the app explicitly asks for them via `schtasks /run`.
+  nsExec::ExecToLog 'schtasks /create /tn "ScreenTimeBlockTaskMgr" /tr "reg.exe add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v DisableTaskMgr /t REG_DWORD /d 1 /f" /sc once /sd 01/01/1980 /st 00:00 /rl highest /ru SYSTEM /f'
+  Pop $0
+  nsExec::ExecToLog 'schtasks /create /tn "ScreenTimeUnblockTaskMgr" /tr "reg.exe delete HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v DisableTaskMgr /f" /sc once /sd 01/01/1980 /st 00:00 /rl highest /ru SYSTEM /f'
+  Pop $0
 !macroend
 
 !macro customUnInstall
@@ -82,4 +99,16 @@
   DeleteRegValue HKCU \
     "Software\Microsoft\Windows\CurrentVersion\Run" \
     "Screen Time"
+
+  ; Remove the Scheduled Tasks if they exist (no-op / silent failure if this
+  ; was a per-user install that never created them).
+  nsExec::ExecToLog 'schtasks /delete /tn "ScreenTimeBlockTaskMgr" /f'
+  Pop $0
+  nsExec::ExecToLog 'schtasks /delete /tn "ScreenTimeUnblockTaskMgr" /f'
+  Pop $0
+
+  ; Defensive: make sure the machine-wide policy isn't left set after uninstall.
+  DeleteRegValue HKLM \
+    "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" \
+    "DisableTaskMgr"
 !macroend
