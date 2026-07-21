@@ -57,7 +57,6 @@ function defaults() {
 
         // ---- lock system -----------------------------------------------------
         breakLockMinutes: 5,        // how long a full break locks the computer
-        debugUnlock: false,         // show a "debug exit" button on the lock screen
         ignoreBeepMinutes: 5,       // ignore the alarm this long => auto full lock
         approveShortLockSeconds: 10,// "approve me" from the prompt locks this long
         approveMinLockSeconds: 20,  // "approve me" on the lock screen needs this much lock time first
@@ -78,8 +77,9 @@ function defaults() {
         telegram: {
           enabled: false,
           botToken: '',
-          chatIds: [],              // group and/or private chat ids to notify
+          chatIds: [],              // group and/or private chat ids (or @usernames) to notify
           introSent: false,         // whether the first-time explanation was delivered
+          knownUsers: {},           // learned @username(lowercase) -> chat id, from /start etc.
         },
       }
     }

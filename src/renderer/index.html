@@ -321,10 +321,6 @@
             <input type="number" class="text-input num" id="brk-approve-min" min="1" max="120" step="1" />
           </div>
           <div class="setting">
-            <div><div class="set-title">Debug: allow exiting the lock</div><div class="subtle">Shows an escape button on the lock screen. Turn OFF to make the lock inescapable.</div></div>
-            <label class="switch"><input type="checkbox" id="brk-debug-unlock" /><span class="slider"></span></label>
-          </div>
-          <div class="setting">
             <div><div class="set-title">Try it now</div><div class="subtle">Fire the break prompt immediately (same as /lock)</div></div>
             <button class="btn ghost" id="brk-force">🔒 Take a break now</button>
           </div>
@@ -343,8 +339,8 @@
             <input type="text" class="text-input" id="tg-token" style="width:230px" placeholder="123456:ABC-DEF..." />
           </div>
           <div class="setting">
-            <div style="flex:1"><div class="set-title">Chat IDs</div><div class="subtle">Group and/or private chat ids, comma-separated</div></div>
-            <input type="text" class="text-input" id="tg-chatids" style="width:230px" placeholder="-1001234567890, 987654321" />
+            <div style="flex:1"><div class="set-title">Chat IDs / usernames</div><div class="subtle">Numeric ids and/or @usernames, comma-separated. For an @username to receive alerts, that person must first send /start to the bot (that's how it learns their numeric id).</div></div>
+            <input type="text" class="text-input" id="tg-chatids" style="width:230px" placeholder="-1001234567890, 987654321, @username" />
           </div>
           <div class="setting">
             <div><div class="set-title">Send a test message</div><div class="subtle">Confirms the token & chat ids work</div></div>

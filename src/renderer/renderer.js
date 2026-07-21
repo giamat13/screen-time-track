@@ -503,7 +503,7 @@ async function loadBreaks() {
     enabled: false, checkIntervalMinutes: 60,
     devMode: false, checkIntervalSeconds: 10,
     beepFrequency: 1000, beepDuration: 200, beepIntervalSeconds: 0.4,
-    breakLockMinutes: 5, debugUnlock: false, ignoreBeepMinutes: 5,
+    breakLockMinutes: 5, ignoreBeepMinutes: 5,
     approveShortLockSeconds: 10, approveMinLockSeconds: 20,
     cancelWindowSeconds: 10,
     tier1Minutes: 1, tier1BeepSeconds: 30,
@@ -525,7 +525,6 @@ async function loadBreaks() {
   $('#brk-ignore-min').value = brkSettings.ignoreBeepMinutes;
   $('#brk-approve-short').value = brkSettings.approveShortLockSeconds;
   $('#brk-approve-min').value = brkSettings.approveMinLockSeconds;
-  $('#brk-debug-unlock').checked = !!brkSettings.debugUnlock;
 
   // escalation
   $('#brk-cancel-win').value = brkSettings.cancelWindowSeconds;
@@ -617,7 +616,6 @@ async function saveBrkSettings() {
     ignoreBeepMinutes: numVal('brk-ignore-min', 5),
     approveShortLockSeconds: numVal('brk-approve-short', 10),
     approveMinLockSeconds: numVal('brk-approve-min', 20),
-    debugUnlock: $('#brk-debug-unlock').checked,
 
     cancelWindowSeconds: numVal('brk-cancel-win', 10),
     tier1Minutes: numVal('brk-t1-min', 1),
@@ -653,14 +651,13 @@ $('#brk-test').addEventListener('click', () => api.testBreak());
   'brk-cancel-win', 'brk-t1-min', 'brk-t1-beep', 'brk-t2-min', 'brk-t2-beep',
   'brk-t3-min', 'brk-t3-beep', 'brk-t3plus-beep',
 ].forEach((id) => $(`#${id}`).addEventListener('change', saveBrkSettings));
-$('#brk-debug-unlock').addEventListener('change', saveBrkSettings);
 $('#brk-force').addEventListener('click', () => { api.forceBreak(); toast('🔒 Break prompt fired'); });
 
 ['tg-enabled', 'tg-token', 'tg-chatids'].forEach((id) => $(`#${id}`).addEventListener('change', saveTelegram));
 $('#tg-test').addEventListener('click', async () => {
   await saveTelegram();
   const res = await api.telegramTest();
-  toast(res && res.ok ? '✉️ Test sent' : '❌ Test failed — check token & chat ids');
+  toast(res && res.ok ? '✉️ Test sent' : `❌ Test failed — ${(res && res.error) || 'check token & chat ids'}`);
 });
 
 // ---------- break alarm prompt ----------

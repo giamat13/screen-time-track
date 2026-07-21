@@ -175,9 +175,11 @@ class BreakReminder {
     return this.getLockState();
   }
 
-  // Debug-only "exit break" button on the lock screen.
-  debugExit() {
-    if (!this._brk().debugUnlock) return this.getLockState();
+  // Always-available panic escape ("release the computer"). Unconditionally
+  // ends any lock — the owner's safety hatch so a test run can never trap them.
+  // ponytail: this makes the lock defeatable by anyone at the keyboard; gate it
+  // behind devMode if it's ever used on someone else's machine.
+  release() {
     this._unlock();
     this._escalationArmed = false;
     return { locked: false };
@@ -196,7 +198,6 @@ class BreakReminder {
       remainingMs: Math.max(0, (this._lockUntilAt || now) - now),
       totalMs: Math.max(0, (this._lockUntilAt || now) - (this._lockStartAt || now)),
       showApprove: isBreak && !this._lockApproved && !!(s.telegram && s.telegram.enabled),
-      showDebug: !!s.debugUnlock,
       canApproveNow: elapsed >= minMs,
       minApproveSeconds: int(s.approveMinLockSeconds, 20),
     };
@@ -365,8 +366,11 @@ class BreakReminder {
 
     const s = this._brk();
     let durMs;
-    if (mode === 'break') durMs = int(s.breakLockMinutes, 5) * 60 * 1000;
-    else durMs = int(s.approveShortLockSeconds, 10) * 1000;
+    if (mode === 'break') {
+      // In dev mode the break lock is seconds (same clock as the presence timer),
+      // never the real 5 minutes — otherwise a quick test traps you for real.
+      durMs = s.devMode ? this._baseIntervalMs() : int(s.breakLockMinutes, 5) * 60 * 1000;
+    } else durMs = int(s.approveShortLockSeconds, 10) * 1000;
 
     this._mode = 'locked';
     this._lockMode = mode;

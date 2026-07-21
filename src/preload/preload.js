@@ -69,6 +69,6 @@ contextBridge.exposeInMainWorld('api', {
 contextBridge.exposeInMainWorld('lock', {
   getState: () => ipcRenderer.invoke('lock:getState'),
   approve: () => ipcRenderer.invoke('lock:approve'),
-  debugExit: () => ipcRenderer.invoke('lock:debugExit'),
+  release: () => ipcRenderer.invoke('lock:release'),
   onTick: (cb) => ipcRenderer.on('lock:tick', (_e, d) => cb(d)),
 });

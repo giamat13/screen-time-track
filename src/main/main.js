@@ -213,19 +213,36 @@ function startBreakReminder() {
   if (savedLock) breakReminder.resumeLock(savedLock);
 }
 
+function telegramEnabled() {
+  return !!((store.getSettings().breakReminder || {}).telegram || {}).enabled;
+}
+
 function startTelegram() {
   telegram = new TelegramBot({
     getConfig: () => (store.getSettings().breakReminder || {}).telegram || {},
     onMessage: (msg) => {
+      // The bot keeps polling whenever a token is set, but it only exerts power
+      // (veto/lock) when Telegram is actually enabled.
+      if (!telegramEnabled()) return;
       // A veto from a watcher re-locks / re-beeps based on how fast it arrived.
       if (msg && msg.negative && breakReminder) breakReminder.onTelegramVeto();
     },
     onCommand: (cmd) => {
+      if (!telegramEnabled()) return;
       // /lock does exactly what a break reminder firing does.
       if (cmd === 'lock' && breakReminder) {
         breakReminder.forcePrompt();
         presentBreakPromptIfRinging();
       }
+    },
+    // Persist a learned @username -> chat id so a watcher added by @username in
+    // the app can still be reached (Telegram needs the numeric id to send).
+    onLearnUser: (username, id) => {
+      const tg = (store.getSettings().breakReminder || {}).telegram || {};
+      const known = Object.assign({}, tg.knownUsers);
+      if (known[username] === String(id)) return;
+      known[username] = String(id);
+      store.setSettings({ breakReminder: { telegram: { knownUsers: known } } });
     },
   });
   telegram.refresh();
@@ -243,8 +260,8 @@ function maybeSendTelegramIntro() {
     'If they should NOT keep playing, reply /cancel — or a keyword like "no", "stop", ' +
     '"אסור", "לא". The faster you reply, the harder it locks their computer back.\n\n' +
     'You can also send /lock at any time to make them take a break now.';
-  telegram.sendToAll(intro).then((ok) => {
-    if (ok) store.setSettings({ breakReminder: { telegram: { introSent: true } } });
+  telegram.sendToAll(intro).then((r) => {
+    if (r && r.ok) store.setSettings({ breakReminder: { telegram: { introSent: true } } });
   });
 }
 
@@ -530,14 +547,13 @@ function setupIpc() {
   ipcMain.handle('breaks:respond', (_e, choice) => breakReminder ? breakReminder.respond(choice) : { isBeeping: false, nextCheckAt: null });
   ipcMain.handle('breaks:force', () => { if (breakReminder) { breakReminder.forcePrompt(); presentBreakPromptIfRinging(); } });
   ipcMain.handle('breaks:telegramTest', async () => {
-    if (!telegram) return { ok: false };
-    const ok = await telegram.sendToAll('✅ Screen Time test message — you are set up to receive alerts.');
-    return { ok };
+    if (!telegram) return { ok: false, error: 'telegram not started' };
+    return telegram.sendToAll('✅ Screen Time test message — you are set up to receive alerts.');
   });
 
   ipcMain.handle('lock:getState', () => breakReminder ? breakReminder.getLockState() : { locked: false });
   ipcMain.handle('lock:approve', () => breakReminder ? breakReminder.approveFromLock() : { locked: false });
-  ipcMain.handle('lock:debugExit', () => breakReminder ? breakReminder.debugExit() : { locked: false });
+  ipcMain.handle('lock:release', () => breakReminder ? breakReminder.release() : { locked: false });
 
   ipcMain.handle('goals:get', () => store.getGoals());
   ipcMain.handle('goals:set', (_e, appName, targetSec) => store.setGoal(appName, targetSec));

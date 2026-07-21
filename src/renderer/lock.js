@@ -41,8 +41,6 @@ function render(state) {
   } else {
     hint.classList.add('hidden');
   }
-
-  el('debug').classList.toggle('hidden', !state.showDebug);
 }
 
 el('approve').addEventListener('click', async () => {
@@ -51,8 +49,9 @@ el('approve').addEventListener('click', async () => {
   render(st);
 });
 
-el('debug').addEventListener('click', async () => {
-  await window.lock.debugExit();
+el('release').addEventListener('click', async () => {
+  el('release').disabled = true;
+  await window.lock.release();
 });
 
 // Block context menu / key-based escapes at the renderer level too.
