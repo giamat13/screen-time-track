@@ -269,9 +269,10 @@ function startTelegram() {
     },
     onCommand: (cmd) => {
       if (!telegramEnabled()) return;
-      // /lock does exactly what a break reminder firing does.
+      // /lock does exactly what a break reminder firing does — except a
+      // watcher's forced lock can't be waved off with "approve me".
       if (cmd === 'lock' && breakReminder) {
-        breakReminder.forcePrompt();
+        breakReminder.forcePrompt(false);
         presentBreakPromptIfRinging();
       }
     },

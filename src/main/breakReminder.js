@@ -139,10 +139,12 @@ class BreakReminder {
 
   // ---- external commands ---------------------------------------------------
 
-  // /lock or "test the flow" — behave exactly like the presence timer firing.
-  forcePrompt() {
+  // "test the flow" (debug button) or a watcher's /lock — behave like the
+  // presence timer firing. A watcher's /lock is a deliberate override, so it
+  // doesn't offer the "approve me" escape valve the way a normal timer does.
+  forcePrompt(allowApprove = true) {
     if (this._mode === 'locked') return this.getStatus();
-    this._startBeeping({ phase: 'reminder', allowApprove: true, timeoutMs: this._ignoreBeepMs(), onTimeout: () => this._lock('break') });
+    this._startBeeping({ phase: 'reminder', allowApprove, timeoutMs: this._ignoreBeepMs(), onTimeout: () => this._lock('break') });
     return this.getStatus();
   }
 
@@ -203,12 +205,15 @@ class BreakReminder {
     };
   }
 
-  // A negative / veto reply arrived from a watcher on Telegram.
+  // A negative / veto reply (/cancel or a keyword) arrived from a watcher on
+  // Telegram. Acts like /lock — always forces something, no arming required —
+  // but still checks the times: if it's answering a live "approve me" ping,
+  // the response severity scales with how fast it came; standalone (no ping
+  // pending) it's instant, same as /lock.
   onTelegramVeto() {
-    if (!this._escalationArmed) return;
     this._escalationArmed = false;
     const s = this._brk();
-    const elapsedMs = Date.now() - (this._approveSentAt || Date.now());
+    const elapsedMs = this._approveSentAt ? Date.now() - this._approveSentAt : 0;
 
     if (elapsedMs <= int(s.cancelWindowSeconds, 10) * 1000) {
       this._lock('break');                 // instant veto
