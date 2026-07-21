@@ -18,7 +18,7 @@ const AWAY_RESET_MS = 5 * 60 * 1000;  // away this long → the presence timer r
 // main.js owns the actual BrowserWindow and Telegram client and injects them
 // as callbacks, so this module stays free of Electron imports.
 class BreakReminder {
-  constructor({ getSettings, powerMonitor, onPrompt, showLock, updateLock, hideLock, sendTelegram, notify }) {
+  constructor({ getSettings, powerMonitor, onPrompt, showLock, updateLock, hideLock, sendTelegram, notify, persistLock, clearLock }) {
     this._getSettings = getSettings;
     this._pm = powerMonitor;
     this._onPrompt = fn(onPrompt);
@@ -27,6 +27,8 @@ class BreakReminder {
     this._hideLock = fn(hideLock);
     this._sendTelegram = fn(sendTelegram);   // (text) => void, pings the watchers
     this._notify = fn(notify);
+    this._persistLock = fn(persistLock);     // (state) => void, durably record an in-force break lock
+    this._clearLock = fn(clearLock);         // () => void, erase the persisted break lock
 
     this._tick = null;                        // master 1s interval
     this._beepProc = null;
@@ -80,6 +82,28 @@ class BreakReminder {
   restart() {
     if (this._mode === 'idle') { this._remainingMs = null; this._lastTickAt = null; }
     this.start();
+  }
+
+  // Re-engage a break lock that was still in force when the app last exited — a
+  // crash, a normal quit, or a full power-off. Called once at startup with
+  // whatever was persisted. The stored end time is absolute wall-clock, so time
+  // spent powered off already counted toward the break: if the whole break
+  // elapsed while off there's nothing left to lock, otherwise we lock for the
+  // remainder. Rebooting to escape therefore buys nothing.
+  resumeLock(saved) {
+    if (!saved || saved.mode !== 'break') return false;
+    const until = int(saved.lockUntilAt, 0);
+    if (until - Date.now() <= 0) { this._clearLock(); return false; } // break already over
+    this.start();
+    this._mode = 'locked';
+    this._lockMode = 'break';
+    this._lockStartAt = Date.now();
+    this._lockUntilAt = until;           // keep the original absolute end — off-time counted
+    this._lockApproved = false;
+    this._escalationArmed = false;
+    this._persistBreakLock();
+    this._showLock(this.getLockState());
+    return true;
   }
 
   testBeep() {
@@ -146,6 +170,7 @@ class BreakReminder {
       // shorten the countdown to the remaining seconds needed to reach the
       // minimum — without resetting it back up to the full minimum.
       this._lockUntilAt = (this._lockStartAt || Date.now()) + minMs;
+      this._persistBreakLock();          // keep the persisted end time in sync
     }
     return this.getLockState();
   }
@@ -348,10 +373,20 @@ class BreakReminder {
     this._lockStartAt = Date.now();
     this._lockUntilAt = Date.now() + durMs;
     this._lockApproved = false;
+    this._persistBreakLock();   // no-op for the brief approve-short lock
     this._showLock(this.getLockState());
   }
 
+  // Durably record an in-force break lock by its absolute end time so it can be
+  // restored after a reboot. Only the real break persists — the short
+  // "get up and check" approve lock is not worth surviving a restart.
+  _persistBreakLock() {
+    if (this._mode !== 'locked' || this._lockMode !== 'break') return;
+    this._persistLock({ mode: 'break', lockUntilAt: this._lockUntilAt });
+  }
+
   _unlock() {
+    this._clearLock();
     this._hideLock();
     this._mode = 'idle';
     this._lockMode = null;

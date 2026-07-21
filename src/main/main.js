@@ -200,8 +200,17 @@ function startBreakReminder() {
     hideLock: () => hideLock(),
     sendTelegram: (text) => { if (telegram) telegram.sendToAll(text); },
     notify: (title, body) => { try { new Notification({ title, body }).show(); } catch (e) { /* headless */ } },
+    persistLock: (state) => store.saveLockState(state),
+    clearLock: () => store.clearLockState(),
   });
   breakReminder.start();
+
+  // If a break lock was still in force when we last exited — a crash, a normal
+  // quit, or a full power-off — re-engage it now. The break's end time is
+  // absolute, so a reboot can't be used to skip it; you only get out early if
+  // the whole break already elapsed while the machine was off.
+  const savedLock = store.readLockState();
+  if (savedLock) breakReminder.resumeLock(savedLock);
 }
 
 function startTelegram() {

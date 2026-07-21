@@ -4,6 +4,11 @@ const fs = require('fs');
 const path = require('path');
 
 const DATA_FILE = path.join(app.getPath('userData'), 'screen-time-data.json');
+// Separate tiny file for an in-force break lock. Kept out of the main data file
+// on purpose: it must be written *synchronously* on every lock tick so a hard
+// power-off leaves an at-most-1s-stale record, independent of the 4s debounce
+// the main store uses.
+const LOCK_FILE = path.join(app.getPath('userData'), 'lock-state.json');
 
 function defaults() {
   return {
@@ -143,6 +148,28 @@ function load() {
 function scheduleSave() {
   if (saveTimer) return;
   saveTimer = setTimeout(() => { saveTimer = null; flush(); }, 4000);
+}
+
+// ---- in-force break lock (survives app exit / reboot) ----------------------
+// A break lock records its absolute end time (epoch ms). Because that end time
+// is wall-clock, the break keeps "ticking" even while the machine is powered
+// off — reboot to escape and you just come back to whatever is left (or to no
+// lock at all if the whole break elapsed while you were off).
+function saveLockState(state) {
+  try { fs.writeFileSync(LOCK_FILE, JSON.stringify(state)); }
+  catch (e) { console.error('[store] lock save failed:', e.message); }
+}
+
+function readLockState() {
+  try {
+    if (fs.existsSync(LOCK_FILE)) return JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
+  } catch (e) { console.error('[store] lock read failed:', e.message); }
+  return null;
+}
+
+function clearLockState() {
+  try { if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE); }
+  catch (e) { console.error('[store] lock clear failed:', e.message); }
 }
 
 function flush() {
@@ -1106,6 +1133,9 @@ module.exports = {
   DATA_FILE,
   load,
   flush,
+  saveLockState,
+  readLockState,
+  clearLockState,
   dateKey,
   addTime,
   subtractTime,
