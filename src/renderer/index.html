@@ -300,6 +300,92 @@
             </div>
           </div>
         </div>
+
+        <!-- Lock settings -->
+        <div class="card">
+          <div class="card-head"><h3>🔒 Lock</h3></div>
+          <div class="setting">
+            <div><div class="set-title">Break lock length</div><div class="subtle">Minutes the computer is fully locked when you take a break</div></div>
+            <input type="number" class="text-input num" id="brk-lock-min" min="1" max="180" step="1" />
+          </div>
+          <div class="setting">
+            <div><div class="set-title">Auto-lock if ignored</div><div class="subtle">Ignore the alarm this many minutes → it locks like a real break</div></div>
+            <input type="number" class="text-input num" id="brk-ignore-min" min="1" max="60" step="1" />
+          </div>
+          <div class="setting">
+            <div><div class="set-title">"Approve" quick lock</div><div class="subtle">Seconds you're locked after pressing "approve me" in the prompt — get up and check</div></div>
+            <input type="number" class="text-input num" id="brk-approve-short" min="1" max="120" step="1" />
+          </div>
+          <div class="setting">
+            <div><div class="set-title">"Approve" min lock on lock-screen</div><div class="subtle">Seconds you must stay locked before "approve" on the lock screen releases you</div></div>
+            <input type="number" class="text-input num" id="brk-approve-min" min="1" max="120" step="1" />
+          </div>
+          <div class="setting">
+            <div><div class="set-title">Debug: allow exiting the lock</div><div class="subtle">Shows an escape button on the lock screen. Turn OFF to make the lock inescapable.</div></div>
+            <label class="switch"><input type="checkbox" id="brk-debug-unlock" /><span class="slider"></span></label>
+          </div>
+          <div class="setting">
+            <div><div class="set-title">Try it now</div><div class="subtle">Fire the break prompt immediately (same as /lock)</div></div>
+            <button class="btn ghost" id="brk-force">🔒 Take a break now</button>
+          </div>
+        </div>
+
+        <!-- Telegram watchers -->
+        <div class="card">
+          <div class="card-head"><h3>📣 Telegram Watchers</h3></div>
+          <p class="subtle" style="margin:-4px 0 12px">When you press "approve me to keep playing", these chats get pinged. A reply of /cancel — or "no" / "stop" / "אסור" / "לא" — locks you back based on how fast it arrives.</p>
+          <div class="setting">
+            <div><div class="set-title">Enabled</div><div class="subtle">Turn on Telegram notifications & veto</div></div>
+            <label class="switch"><input type="checkbox" id="tg-enabled" /><span class="slider"></span></label>
+          </div>
+          <div class="setting">
+            <div style="flex:1"><div class="set-title">Bot token</div><div class="subtle">From @BotFather</div></div>
+            <input type="text" class="text-input" id="tg-token" style="width:230px" placeholder="123456:ABC-DEF..." />
+          </div>
+          <div class="setting">
+            <div style="flex:1"><div class="set-title">Chat IDs</div><div class="subtle">Group and/or private chat ids, comma-separated</div></div>
+            <input type="text" class="text-input" id="tg-chatids" style="width:230px" placeholder="-1001234567890, 987654321" />
+          </div>
+          <div class="setting">
+            <div><div class="set-title">Send a test message</div><div class="subtle">Confirms the token & chat ids work</div></div>
+            <button class="btn ghost" id="tg-test">✉️ Send test</button>
+          </div>
+        </div>
+
+        <!-- Veto escalation -->
+        <div class="card">
+          <div class="card-head"><h3>⏱ Veto Escalation</h3></div>
+          <p class="subtle" style="margin:-4px 0 12px">How the veto reacts, by how long the watcher took to reply after you pressed "approve".</p>
+          <div class="setting">
+            <div><div class="set-title">Instant-lock window</div><div class="subtle">Reply within this many seconds → lock immediately</div></div>
+            <input type="number" class="text-input num" id="brk-cancel-win" min="1" max="120" step="1" />
+          </div>
+          <div class="setting">
+            <div><div class="set-title">Tier 1: reply within (min)</div><div class="subtle">→ beep the seconds below, then lock</div></div>
+            <div style="display:flex;gap:8px">
+              <input type="number" class="text-input num" id="brk-t1-min" min="1" max="60" step="1" title="minutes" />
+              <input type="number" class="text-input num" id="brk-t1-beep" min="1" max="600" step="5" title="beep seconds" />
+            </div>
+          </div>
+          <div class="setting">
+            <div><div class="set-title">Tier 2: reply within (min)</div><div class="subtle">→ beep the seconds below, then lock</div></div>
+            <div style="display:flex;gap:8px">
+              <input type="number" class="text-input num" id="brk-t2-min" min="1" max="120" step="1" title="minutes" />
+              <input type="number" class="text-input num" id="brk-t2-beep" min="1" max="1200" step="5" title="beep seconds" />
+            </div>
+          </div>
+          <div class="setting">
+            <div><div class="set-title">Tier 3: reply within (min)</div><div class="subtle">→ beep the seconds below, then lock</div></div>
+            <div style="display:flex;gap:8px">
+              <input type="number" class="text-input num" id="brk-t3-min" min="1" max="240" step="1" title="minutes" />
+              <input type="number" class="text-input num" id="brk-t3-beep" min="1" max="3600" step="10" title="beep seconds" />
+            </div>
+          </div>
+          <div class="setting">
+            <div><div class="set-title">Beyond tier 3</div><div class="subtle">Reply later than tier 3 → beep this many seconds, then lock</div></div>
+            <input type="number" class="text-input num" id="brk-t3plus-beep" min="1" max="3600" step="10" />
+          </div>
+        </div>
       </section>
 
       <!-- ============ GOALS ============ -->
@@ -758,11 +844,11 @@
       <p class="modal-sub" id="brk-modal-sub">You've been at the computer for a while. Step away and rest your eyes.</p>
       <div class="modal-note hidden" id="brk-modal-note"></div>
       <div class="modal-actions">
-        <button class="btn primary modal-btn" data-choice="break">🚶 I'm taking a break</button>
-        <button class="btn ghost modal-btn" data-choice="cant">🙅 Can't right now</button>
-        <button class="btn ghost modal-btn danger" data-choice="skip">😮‍💨 No energy for a break</button>
+        <button class="btn primary modal-btn" data-choice="break">🚶 אני לוקח הפסקה</button>
+        <button class="btn ghost modal-btn" id="brk-approve-btn" data-choice="approve">✋ אישרו לי להמשיך לשחק</button>
+        <button class="btn ghost modal-btn danger hidden" id="brk-locknow-btn" data-choice="lockNow">🔒 נעל עכשיו</button>
       </div>
-      <p class="modal-fineprint">“No energy” rings you back twice as fast and adds to the break you owe. “Can't right now” just snoozes with no penalty.</p>
+      <p class="modal-fineprint" id="brk-modal-fine">“אני לוקח הפסקה” נועל את המחשב מיד. “אישרו לי להמשיך לשחק” שולח הודעה למשגיחים ונועל אותך לכמה שניות כדי לקום ולבדוק.</p>
     </div>
   </div>
 

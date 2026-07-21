@@ -49,6 +49,33 @@ function defaults() {
         beepFrequency: 1000,
         beepDuration: 200,
         beepIntervalSeconds: 0.4,
+
+        // ---- lock system -----------------------------------------------------
+        breakLockMinutes: 5,        // how long a full break locks the computer
+        debugUnlock: false,         // show a "debug exit" button on the lock screen
+        ignoreBeepMinutes: 5,       // ignore the alarm this long => auto full lock
+        approveShortLockSeconds: 10,// "approve me" from the prompt locks this long
+        approveMinLockSeconds: 20,  // "approve me" on the lock screen needs this much lock time first
+
+        // ---- telegram escalation --------------------------------------------
+        // When you press "approve me", the watchers are messaged. If one of them
+        // replies /cancel or a negative keyword, we react based on how long the
+        // reply took to arrive (elapsed since the message was sent).
+        cancelWindowSeconds: 10,    // reply within this => lock immediately
+        tier1Minutes: 1,            // reply within this => tier1Beep then lock
+        tier1BeepSeconds: 30,
+        tier2Minutes: 5,            // reply within this => tier2Beep then lock
+        tier2BeepSeconds: 60,
+        tier3Minutes: 10,           // reply within this => tier3Beep then lock
+        tier3BeepSeconds: 300,
+        tier3PlusBeepSeconds: 300,  // reply after tier3Minutes => this beep then lock
+
+        telegram: {
+          enabled: false,
+          botToken: '',
+          chatIds: [],              // group and/or private chat ids to notify
+          introSent: false,         // whether the first-time explanation was delivered
+        },
       }
     }
   };
@@ -65,6 +92,10 @@ function load() {
       data.settings = Object.assign(defaults().settings, parsed.settings || {});
       if (parsed.settings?.breakReminder) {
         data.settings.breakReminder = Object.assign(defaults().settings.breakReminder, parsed.settings.breakReminder);
+        data.settings.breakReminder.telegram = Object.assign(
+          defaults().settings.breakReminder.telegram,
+          parsed.settings.breakReminder.telegram || {}
+        );
       }
       data.days = parsed.days || {};
       data.goals = parsed.goals || {};
@@ -923,6 +954,13 @@ function setSettings(partial) {
   // breakReminder is nested — merge it so partial updates don't drop other keys
   if (partial.breakReminder) {
     next.breakReminder = Object.assign({}, data.settings.breakReminder, partial.breakReminder);
+    // telegram is a second level of nesting — merge it too so a partial update
+    // (e.g. just flipping introSent) doesn't wipe the token / chat ids.
+    if (partial.breakReminder.telegram) {
+      next.breakReminder.telegram = Object.assign(
+        {}, data.settings.breakReminder.telegram, partial.breakReminder.telegram
+      );
+    }
   }
   data.settings = next;
   flush();

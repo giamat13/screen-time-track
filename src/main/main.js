@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, powerMonitor, nativeImage, Notification } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, powerMonitor, nativeImage, Notification, globalShortcut } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -18,6 +18,7 @@ const store = require('./store');
 const { Tracker } = require('./tracker');
 const browserBridge = require('./browserBridge');
 const { BreakReminder } = require('./breakReminder');
+const { TelegramBot } = require('./telegram');
 const { createForestEngine, SPECIES: FOREST_SPECIES, ACHIEVEMENTS: FOREST_ACHIEVEMENTS } = require('./forest');
 
 let win = null;
@@ -26,6 +27,9 @@ let tracker = null;
 let forest = null;
 let forestTicker = null;
 let breakReminder = null;
+let telegram = null;
+let lockWin = null;
+let lockRefocus = null;
 let isQuitting = false;
 let locked = false;
 let suspended = false;
@@ -54,6 +58,7 @@ function bootstrap() {
     startTracker();
     startForest();
     startBreakReminder();
+    startTelegram();
     startReminderScheduler();
 
     if (startHidden || (store.getSettings().minimizeToTray && app.getLoginItemSettings().wasOpenedAtLogin)) {
@@ -70,6 +75,8 @@ function bootstrap() {
     if (forestTicker) clearInterval(forestTicker);
     if (tracker) tracker.stop();
     if (breakReminder) breakReminder.stop();
+    if (telegram) telegram.stop();
+    try { globalShortcut.unregisterAll(); } catch (e) { /* ignore */ }
     if (reminderScheduler) clearInterval(reminderScheduler);
     browserBridge.stop();
     store.flush();
@@ -183,8 +190,137 @@ function startBreakReminder() {
       // app, show the prompt now; otherwise it appears when they next focus it.
       presentBreakPromptIfRinging();
     },
+    showLock: (state) => showLock(state),
+    updateLock: (state) => updateLock(state),
+    hideLock: () => hideLock(),
+    sendTelegram: (text) => { if (telegram) telegram.sendToAll(text); },
+    notify: (title, body) => { try { new Notification({ title, body }).show(); } catch (e) { /* headless */ } },
   });
   breakReminder.start();
+}
+
+function startTelegram() {
+  telegram = new TelegramBot({
+    getConfig: () => (store.getSettings().breakReminder || {}).telegram || {},
+    onMessage: (msg) => {
+      // A veto from a watcher re-locks / re-beeps based on how fast it arrived.
+      if (msg && msg.negative && breakReminder) breakReminder.onTelegramVeto();
+    },
+    onCommand: (cmd) => {
+      // /lock does exactly what a break reminder firing does.
+      if (cmd === 'lock' && breakReminder) {
+        breakReminder.forcePrompt();
+        presentBreakPromptIfRinging();
+      }
+    },
+  });
+  telegram.refresh();
+}
+
+// Deliver the one-time "here's what this bot does" message the first time the
+// watcher list is configured with a working token + at least one chat.
+function maybeSendTelegramIntro() {
+  const tg = (store.getSettings().breakReminder || {}).telegram || {};
+  if (!tg.enabled || !tg.botToken || !(tg.chatIds || []).length || tg.introSent) return;
+  if (!telegram) return;
+  const intro =
+    '👋 You were added as a Screen Time watcher.\n\n' +
+    'When this person presses "approve me to keep playing", you\'ll get a message here. ' +
+    'If they should NOT keep playing, reply /cancel — or a keyword like "no", "stop", ' +
+    '"אסור", "לא". The faster you reply, the harder it locks their computer back.\n\n' +
+    'You can also send /lock at any time to make them take a break now.';
+  telegram.sendToAll(intro).then((ok) => {
+    if (ok) store.setSettings({ breakReminder: { telegram: { introSent: true } } });
+  });
+}
+
+// ---- fullscreen kiosk lock -------------------------------------------------
+// Best-effort inescapable lock: fullscreen kiosk window pinned above everything,
+// re-grabbing focus, with common escape shortcuts swallowed. Note: the Windows
+// Secure Attention Sequence (Ctrl+Alt+Del) cannot be blocked from user space
+// without a kernel driver — everything else here is defence-in-depth.
+const LOCK_SHORTCUTS = [
+  'Alt+F4', 'Alt+Tab', 'Alt+Shift+Tab', 'Super', 'CommandOrControl+W',
+  'CommandOrControl+Shift+W', 'CommandOrControl+Esc', 'Alt+Esc', 'Alt+Space',
+  'CommandOrControl+Shift+Esc', 'CommandOrControl+Tab', 'CommandOrControl+Shift+Tab',
+  'F11',
+];
+
+function registerLockShortcuts() {
+  for (const acc of LOCK_SHORTCUTS) {
+    try { globalShortcut.register(acc, () => {}); } catch (e) { /* not all combos are registerable */ }
+  }
+}
+
+function unregisterLockShortcuts() {
+  for (const acc of LOCK_SHORTCUTS) {
+    try { globalShortcut.unregister(acc); } catch (e) { /* ignore */ }
+  }
+}
+
+function showLock(state) {
+  if (lockWin && !lockWin.isDestroyed()) { updateLock(state); return; }
+  lockWin = new BrowserWindow({
+    fullscreen: true,
+    kiosk: true,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    closable: false,
+    minimizable: false,
+    maximizable: false,
+    movable: false,
+    resizable: false,
+    backgroundColor: '#07080c',
+    icon: path.join(ASSETS, 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  lockWin.setAlwaysOnTop(true, 'screen-saver');
+  try { lockWin.setVisibleOnAllWorkspaces(true); } catch (e) { /* platform */ }
+  lockWin.loadFile(path.join(__dirname, '..', 'renderer', 'lock.html'));
+
+  // Refuse to close while a lock is actually in force.
+  lockWin.on('close', (e) => {
+    if (breakReminder && breakReminder.getStatus().isLocked) e.preventDefault();
+  });
+
+  // Swallow modifier-driven escapes inside the window itself.
+  lockWin.webContents.on('before-input-event', (e, input) => {
+    if (input.type !== 'keyDown') return;
+    if (input.alt || input.meta) { e.preventDefault(); return; }
+    if (['F4', 'Escape', 'Tab', 'F11', 'Meta'].includes(input.key)) e.preventDefault();
+  });
+
+  registerLockShortcuts();
+
+  // Keep re-asserting focus + top-most so nothing can sit in front of the lock.
+  if (lockRefocus) clearInterval(lockRefocus);
+  lockRefocus = setInterval(() => {
+    if (!lockWin || lockWin.isDestroyed()) return;
+    lockWin.setAlwaysOnTop(true, 'screen-saver');
+    if (!lockWin.isFocused()) { try { lockWin.show(); lockWin.focus(); } catch (e) { /* ignore */ } }
+  }, 700);
+}
+
+function updateLock(state) {
+  if (lockWin && !lockWin.isDestroyed()) lockWin.webContents.send('lock:tick', state);
+}
+
+function hideLock() {
+  unregisterLockShortcuts();
+  if (lockRefocus) { clearInterval(lockRefocus); lockRefocus = null; }
+  if (lockWin && !lockWin.isDestroyed()) {
+    const w = lockWin;
+    lockWin = null;
+    try { w.setClosable(true); } catch (e) { /* ignore */ }
+    try { w.destroy(); } catch (e) { /* ignore */ }
+  } else {
+    lockWin = null;
+  }
 }
 
 function startTracker() {
@@ -366,12 +502,26 @@ function setupIpc() {
     if (partial && partial.breakReminder && breakReminder) {
       breakReminder.restart();
     }
+    if (partial && partial.breakReminder && partial.breakReminder.telegram && telegram) {
+      telegram.refresh();
+      maybeSendTelegramIntro();
+    }
     return next;
   });
 
   ipcMain.handle('breaks:testBeep', () => { if (breakReminder) breakReminder.testBeep(); });
   ipcMain.handle('breaks:getStatus', () => breakReminder ? breakReminder.getStatus() : { isBeeping: false, nextCheckAt: null });
   ipcMain.handle('breaks:respond', (_e, choice) => breakReminder ? breakReminder.respond(choice) : { isBeeping: false, nextCheckAt: null });
+  ipcMain.handle('breaks:force', () => { if (breakReminder) { breakReminder.forcePrompt(); presentBreakPromptIfRinging(); } });
+  ipcMain.handle('breaks:telegramTest', async () => {
+    if (!telegram) return { ok: false };
+    const ok = await telegram.sendToAll('✅ Screen Time test message — you are set up to receive alerts.');
+    return { ok };
+  });
+
+  ipcMain.handle('lock:getState', () => breakReminder ? breakReminder.getLockState() : { locked: false });
+  ipcMain.handle('lock:approve', () => breakReminder ? breakReminder.approveFromLock() : { locked: false });
+  ipcMain.handle('lock:debugExit', () => breakReminder ? breakReminder.debugExit() : { locked: false });
 
   ipcMain.handle('goals:get', () => store.getGoals());
   ipcMain.handle('goals:set', (_e, appName, targetSec) => store.setGoal(appName, targetSec));
