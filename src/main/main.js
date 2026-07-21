@@ -19,6 +19,7 @@ const { Tracker } = require('./tracker');
 const browserBridge = require('./browserBridge');
 const { BreakReminder } = require('./breakReminder');
 const { TelegramBot } = require('./telegram');
+const taskmgrBlock = require('./taskmgrBlock');
 const { createForestEngine, SPECIES: FOREST_SPECIES, ACHIEVEMENTS: FOREST_ACHIEVEMENTS } = require('./forest');
 
 let win = null;
@@ -49,6 +50,9 @@ if (!app.requestSingleInstanceLock()) {
 function bootstrap() {
   app.whenReady().then(() => {
     store.load();
+    // Defensive: if a previous run crashed while locked, this undoes a
+    // leftover DisableTaskMgr so the user is never permanently locked out.
+    taskmgrBlock.unblock();
     createWindow();
     createTray();
     setupPowerEvents();
@@ -77,6 +81,7 @@ function bootstrap() {
     if (breakReminder) breakReminder.stop();
     if (telegram) telegram.stop();
     try { globalShortcut.unregisterAll(); } catch (e) { /* ignore */ }
+    taskmgrBlock.unblock(); // never quit while leaving Task Manager blocked
     if (reminderScheduler) clearInterval(reminderScheduler);
     browserBridge.stop();
     store.flush();
@@ -259,6 +264,7 @@ function unregisterLockShortcuts() {
 }
 
 function showLock(state) {
+  taskmgrBlock.block();
   if (lockWin && !lockWin.isDestroyed()) { updateLock(state); return; }
   lockWin = new BrowserWindow({
     fullscreen: true,
@@ -311,6 +317,7 @@ function updateLock(state) {
 }
 
 function hideLock() {
+  taskmgrBlock.unblock();
   unregisterLockShortcuts();
   if (lockRefocus) { clearInterval(lockRefocus); lockRefocus = null; }
   if (lockWin && !lockWin.isDestroyed()) {
