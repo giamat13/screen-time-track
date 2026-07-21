@@ -228,6 +228,7 @@ function isPaused() {
 
 function startBreakReminder() {
   breakReminder = new BreakReminder({
+    isDev,
     getSettings: () => store.getSettings(),
     powerMonitor,
     onPrompt: () => {

@@ -24,6 +24,8 @@ function render(state) {
     ? 'קום, מתח את הגוף, ותן לעיניים לנוח. אי אפשר לצאת עד שהזמן נגמר.'
     : 'קום שנייה מהמחשב ותראה אם מישהו צריך אותך.';
 
+  el('release').classList.toggle('hidden', !state.isDev);
+
   el('count').textContent = fmt(state.remainingMs);
   if (state.totalMs && state.totalMs > totalMs) totalMs = state.totalMs;
   const pct = totalMs > 0 ? Math.max(0, Math.min(100, (state.remainingMs / totalMs) * 100)) : 0;

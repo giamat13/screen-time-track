@@ -18,7 +18,8 @@ const AWAY_RESET_MS = 5 * 60 * 1000;  // away this long → the presence timer r
 // main.js owns the actual BrowserWindow and Telegram client and injects them
 // as callbacks, so this module stays free of Electron imports.
 class BreakReminder {
-  constructor({ getSettings, powerMonitor, onPrompt, showLock, updateLock, hideLock, sendTelegram, notify, persistLock, clearLock }) {
+  constructor({ isDev, getSettings, powerMonitor, onPrompt, showLock, updateLock, hideLock, sendTelegram, notify, persistLock, clearLock }) {
+    this._isDev = !!isDev;
     this._getSettings = getSettings;
     this._pm = powerMonitor;
     this._onPrompt = fn(onPrompt);
@@ -177,11 +178,11 @@ class BreakReminder {
     return this.getLockState();
   }
 
-  // Always-available panic escape ("release the computer"). Unconditionally
-  // ends any lock — the owner's safety hatch so a test run can never trap them.
-  // ponytail: this makes the lock defeatable by anyone at the keyboard; gate it
-  // behind devMode if it's ever used on someone else's machine.
+  // Panic escape ("release the computer") — dev-mode only, so a test run can
+  // never trap the developer. Gated behind isDev because it makes the lock
+  // trivially defeatable by anyone at the keyboard.
   release() {
+    if (!this._isDev) return this.getLockState();
     this._unlock();
     this._escalationArmed = false;
     return { locked: false };
@@ -202,6 +203,7 @@ class BreakReminder {
       showApprove: isBreak && !this._lockApproved && !!(s.telegram && s.telegram.enabled),
       canApproveNow: elapsed >= minMs,
       minApproveSeconds: int(s.approveMinLockSeconds, 20),
+      isDev: this._isDev,
     };
   }
 
