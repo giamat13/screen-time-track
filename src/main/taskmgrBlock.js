@@ -1,36 +1,59 @@
 const { spawn } = require('child_process');
 
-// Best-effort, admin-free block of Task Manager (the one thing reachable from
-// Ctrl+Alt+Del / Ctrl+Shift+Esc that could kill the lock/beep process).
+// Blocks Task Manager (the one thing reachable from Ctrl+Alt+Del / Ctrl+Shift+Esc
+// that could kill the lock/beep process) while a lock is active.
 //
 // True Ctrl+Alt+Del interception is impossible from user-mode — it's a
 // hardcoded "secure attention sequence" in Windows specifically so no app,
-// malicious or not, can spoof/suppress it. What IS reachable without admin
-// rights is the per-user (HKCU, not HKLM) DisableTaskMgr policy: writing it
-// doesn't need elevation, and Task Manager checks it on every launch attempt.
-// It's soft — an already-open Task Manager isn't force-closed, and a
-// sufficiently technical user could still undo the registry key manually —
-// but it closes the obvious escape hatch without asking for admin/UAC.
+// malicious or not, can spoof/suppress it.
+//
+// Two layers, strong-to-weak:
+//
+//   1. Scheduled Task (HKLM). If the user opted into an elevated ("for all
+//      users") install, `build/installer.nsh` registered two on-demand
+//      Scheduled Tasks (Highest privileges, running as SYSTEM) that flip the
+//      *machine-wide* DisableTaskMgr policy. Triggering an already-registered
+//      task needs no further UAC prompt — the elevation grant lives in the
+//      task definition, established once at install time — and a standard
+//      user can't undo an HKLM value from their own Registry Editor.
+//   2. Per-user (HKCU) registry fallback. Used when the Scheduled Tasks
+//      aren't present (a non-elevated / per-user install). Needs zero admin,
+//      ever, but the same user could reopen Registry Editor and delete it.
+//
+// unblock() always attempts both, so cleanup is correct regardless of which
+// layer actually blocked, and a crash mid-lock never leaves either stuck on.
 const KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System';
+const TASK_BLOCK = 'ScreenTimeBlockTaskMgr';
+const TASK_UNBLOCK = 'ScreenTimeUnblockTaskMgr';
 
-function run(args) {
+function run(cmd, args) {
   return new Promise((resolve) => {
     if (process.platform !== 'win32') return resolve(false);
-    const p = spawn('reg.exe', args, { windowsHide: true });
+    const p = spawn(cmd, args, { windowsHide: true });
     p.on('error', () => resolve(false));
     p.on('exit', (code) => resolve(code === 0));
   });
 }
 
-function block() {
-  return run(['add', KEY, '/v', 'DisableTaskMgr', '/t', 'REG_DWORD', '/d', '1', '/f']);
+function runScheduledTask(name) {
+  return run('schtasks.exe', ['/run', '/tn', name]);
 }
 
-// Always safe to call even if the value was never set (reg delete on a
-// missing value just fails quietly) — used defensively on every app start so
-// a crash mid-lock never leaves Task Manager blocked forever.
-function unblock() {
-  return run(['delete', KEY, '/v', 'DisableTaskMgr', '/f']);
+function regToggle(add) {
+  const args = add
+    ? ['add', KEY, '/v', 'DisableTaskMgr', '/t', 'REG_DWORD', '/d', '1', '/f']
+    : ['delete', KEY, '/v', 'DisableTaskMgr', '/f'];
+  return run('reg.exe', args);
+}
+
+async function block() {
+  const strong = await runScheduledTask(TASK_BLOCK);
+  if (!strong) await regToggle(true); // no elevated task registered — fall back
+}
+
+async function unblock() {
+  await runScheduledTask(TASK_UNBLOCK);
+  await regToggle(false);
 }
 
 module.exports = { block, unblock };
