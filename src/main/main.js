@@ -1,9 +1,47 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, powerMonitor, nativeImage, Notification, globalShortcut } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('child_process');
 
 const isDev = process.argv.includes('--dev');
 const startHidden = process.argv.includes('--hidden');
+const FLAVOR = isDev ? 'dev' : 'regular';
+
+// Dev and the installed build use separate userData dirs, so nothing normally
+// tells one that the other is alive. Both share one Telegram bot token, and
+// Telegram allows only one live getUpdates poller per token — so if both
+// happen to be running (e.g. the installed build auto-launched hidden in the
+// tray while dev is opened for testing), only one of them ever gets messages,
+// and it looks like a mystery. This tiny shared marker (in the common AppData
+// folder, above either userData dir) lets each flavor see the other and name
+// it in the conflict notification instead of leaving it a guessing game.
+const INSTANCES_FILE = path.join(app.getPath('appData'), 'screen-time-track-instances.json');
+
+function registerInstance() {
+  let all = {};
+  try { all = JSON.parse(fs.readFileSync(INSTANCES_FILE, 'utf8')); } catch (e) { /* missing/corrupt is fine */ }
+  all[FLAVOR] = { pid: process.pid, hidden: startHidden };
+  try { fs.writeFileSync(INSTANCES_FILE, JSON.stringify(all)); } catch (e) { /* best effort */ }
+}
+
+function unregisterInstance() {
+  let all = {};
+  try { all = JSON.parse(fs.readFileSync(INSTANCES_FILE, 'utf8')); } catch (e) { return; }
+  if (all[FLAVOR] && all[FLAVOR].pid === process.pid) delete all[FLAVOR];
+  try { fs.writeFileSync(INSTANCES_FILE, JSON.stringify(all)); } catch (e) { /* best effort */ }
+}
+
+// Which *other* flavor is actually alive right now, if any — used to name the
+// culprit in the Telegram conflict notification.
+function otherRunningInstance() {
+  let all = {};
+  try { all = JSON.parse(fs.readFileSync(INSTANCES_FILE, 'utf8')); } catch (e) { return null; }
+  const other = FLAVOR === 'dev' ? 'regular' : 'dev';
+  const entry = all[other];
+  if (!entry || !entry.pid) return null;
+  try { process.kill(entry.pid, 0); } catch (e) { return null; } // not alive
+  return entry;
+}
 
 // Dev runs against a separate userData dir so it has its own single-instance
 // lock and data file — that way F5 always launches the dev source independently
@@ -50,6 +88,7 @@ if (!app.requestSingleInstanceLock()) {
 function bootstrap() {
   app.whenReady().then(() => {
     store.load();
+    registerInstance();
     // Defensive: if a previous run crashed while locked, this undoes a
     // leftover DisableTaskMgr so the user is never permanently locked out.
     taskmgrBlock.unblock();
@@ -76,6 +115,7 @@ function bootstrap() {
 
   app.on('before-quit', () => {
     isQuitting = true;
+    unregisterInstance();
     if (forestTicker) clearInterval(forestTicker);
     if (tracker) tracker.stop();
     if (breakReminder) breakReminder.stop();
@@ -243,6 +283,17 @@ function startTelegram() {
       if (known[username] === String(id)) return;
       known[username] = String(id);
       store.setSettings({ breakReminder: { telegram: { knownUsers: known } } });
+    },
+    // Telegram allows only one active getUpdates poller per bot token. Dev and
+    // the installed build share one token, so if both happen to be running,
+    // whichever isn't holding the connection gets nothing (e.g. /cancel silently
+    // does nothing there). Name the culprit using the shared instance registry.
+    onConflict: () => {
+      const other = otherRunningInstance();
+      const body = other
+        ? `The ${other.hidden ? 'hidden, ' : ''}${FLAVOR === 'dev' ? 'regular (installed)' : 'dev'} copy of Screen Time (PID ${other.pid}) is already using this Telegram bot, so this copy gets no messages. Quit that one from its tray icon if you want Telegram to work here instead.`
+        : 'Another running copy of this app is using the same bot token, so this one gets no messages.';
+      try { new Notification({ title: 'Telegram bot conflict', body }).show(); } catch (e) { /* headless */ }
     },
   });
   telegram.refresh();
@@ -544,7 +595,7 @@ function setupIpc() {
 
   ipcMain.handle('breaks:testBeep', () => { if (breakReminder) breakReminder.testBeep(); });
   ipcMain.handle('breaks:getStatus', () => breakReminder ? breakReminder.getStatus() : { isBeeping: false, nextCheckAt: null });
-  ipcMain.handle('breaks:respond', (_e, choice) => breakReminder ? breakReminder.respond(choice) : { isBeeping: false, nextCheckAt: null });
+  ipcMain.handle('breaks:respond', (_e, choice, reason) => breakReminder ? breakReminder.respond(choice, reason) : { isBeeping: false, nextCheckAt: null });
   ipcMain.handle('breaks:force', () => { if (breakReminder) { breakReminder.forcePrompt(); presentBreakPromptIfRinging(); } });
   ipcMain.handle('breaks:telegramTest', async () => {
     if (!telegram) return { ok: false, error: 'telegram not started' };
@@ -552,7 +603,7 @@ function setupIpc() {
   });
 
   ipcMain.handle('lock:getState', () => breakReminder ? breakReminder.getLockState() : { locked: false });
-  ipcMain.handle('lock:approve', () => breakReminder ? breakReminder.approveFromLock() : { locked: false });
+  ipcMain.handle('lock:approve', (_e, reason) => breakReminder ? breakReminder.approveFromLock(reason) : { locked: false });
   ipcMain.handle('lock:release', () => breakReminder ? breakReminder.release() : { locked: false });
 
   ipcMain.handle('goals:get', () => store.getGoals());

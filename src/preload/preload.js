@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('api', {
 
   testBreak: () => ipcRenderer.invoke('breaks:testBeep'),
   getBreakStatus: () => ipcRenderer.invoke('breaks:getStatus'),
-  respondBreak: (choice) => ipcRenderer.invoke('breaks:respond', choice),
+  respondBreak: (choice, reason) => ipcRenderer.invoke('breaks:respond', choice, reason),
   forceBreak: () => ipcRenderer.invoke('breaks:force'),
   telegramTest: () => ipcRenderer.invoke('breaks:telegramTest'),
 
@@ -68,7 +68,7 @@ contextBridge.exposeInMainWorld('api', {
 // Bridge used by the fullscreen lock window (lock.html / lock.js).
 contextBridge.exposeInMainWorld('lock', {
   getState: () => ipcRenderer.invoke('lock:getState'),
-  approve: () => ipcRenderer.invoke('lock:approve'),
+  approve: (reason) => ipcRenderer.invoke('lock:approve', reason),
   release: () => ipcRenderer.invoke('lock:release'),
   onTick: (cb) => ipcRenderer.on('lock:tick', (_e, d) => cb(d)),
 });

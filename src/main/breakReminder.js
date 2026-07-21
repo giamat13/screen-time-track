@@ -147,22 +147,22 @@ class BreakReminder {
   }
 
   // Answer the in-app prompt. choice ∈ 'break' | 'approve' | 'lockNow'.
-  respond(choice) {
+  respond(choice, reason) {
     if (choice === 'break' || choice === 'lockNow') {
       this._lock('break');
     } else if (choice === 'approve') {
-      this._approveFromPrompt();
+      this._approveFromPrompt(reason);
     }
     return this.getStatus();
   }
 
   // Approve button pressed *on the lock screen* (during a full break lock).
-  approveFromLock() {
+  approveFromLock(reason) {
     if (this._mode !== 'locked' || this._lockMode !== 'break') return this.getLockState();
     const s = this._brk();
     const minMs = int(s.approveMinLockSeconds, 20) * 1000;
     const elapsed = Date.now() - (this._lockStartAt || Date.now());
-    this._approveSend();                 // ping watchers + arm escalation
+    this._approveSend(reason);           // ping watchers + arm escalation
     this._lockApproved = true;
     if (elapsed >= minMs) {
       this._unlock();                    // already stood up long enough
@@ -241,11 +241,15 @@ class BreakReminder {
     return int(s.checkIntervalMinutes, 60) * 60 * 1000;
   }
 
-  _approveSend() {
+  // reason is required at the UI level (see renderer.js / lock.js) so watchers
+  // never have to come ask what's going on — it's right there in the ping.
+  _approveSend(reason) {
     const s = this._brk();
     const mins = int(s.breakLockMinutes, 5);
+    const reasonText = (reason || '').trim() || '(no reason given)';
     this._sendTelegram(
       `🎮 "Approve me to keep playing" was just pressed on Screen Time.\n` +
+      `Reason: ${reasonText}\n` +
       `Reply /cancel (or: no / אסור / לא / stop) if they should NOT keep playing.\n` +
       `The sooner you reply, the harder it locks back.`
     );
@@ -255,8 +259,8 @@ class BreakReminder {
     void mins;
   }
 
-  _approveFromPrompt() {
-    this._approveSend();
+  _approveFromPrompt(reason) {
+    this._approveSend(reason);
     this._lock('approve-short');
   }
 

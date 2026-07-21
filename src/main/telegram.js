@@ -25,11 +25,13 @@ function isNegativeReply(text) {
 // Minimal Telegram Bot API client that polls getUpdates and can send messages.
 // No third-party dependencies — just Node's https.
 class TelegramBot {
-  constructor({ getConfig, onMessage, onCommand, onLearnUser }) {
+  constructor({ getConfig, onMessage, onCommand, onLearnUser, onConflict }) {
     this._getConfig = getConfig;            // () => { enabled, botToken, chatIds, ... }
     this._onMessage = typeof onMessage === 'function' ? onMessage : () => {};
     this._onCommand = typeof onCommand === 'function' ? onCommand : () => {};
     this._onLearnUser = typeof onLearnUser === 'function' ? onLearnUser : () => {}; // (username, chatId) => persist
+    this._onConflict = typeof onConflict === 'function' ? onConflict : () => {};   // () => notify, throttled
+    this._lastConflictAt = 0;
     this._offset = 0;                       // getUpdates offset (ack cursor)
     this._polling = false;
     this._stopped = true;
@@ -140,7 +142,18 @@ class TelegramBot {
         this._activeReq = null;
         try {
           const json = JSON.parse(raw);
-          if (json && json.ok && Array.isArray(json.result)) this._handleUpdates(json.result, cfg);
+          if (json && json.ok && Array.isArray(json.result)) {
+            this._handleUpdates(json.result, cfg);
+          } else if (res.statusCode === 409) {
+            // Telegram allows only one active getUpdates poller per bot token —
+            // another running instance (e.g. dev + installed app sharing the
+            // same token) is holding it, so this one gets nothing, ever.
+            const now = Date.now();
+            if (now - this._lastConflictAt > 5 * 60 * 1000) {
+              this._lastConflictAt = now;
+              this._onConflict();
+            }
+          }
         } catch { /* ignore malformed */ }
         // brief spacing so a hard error doesn't hot-loop
         setTimeout(() => this._poll(), 500);

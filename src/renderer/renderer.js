@@ -676,16 +676,44 @@ function showBreakModal(d) {
   // "lock now" appears whenever we're beeping so you can end it early.
   $('#brk-locknow-btn').classList.toggle('hidden', !escalation);
   $('#brk-modal-note').classList.add('hidden');
+  $('#brk-approve-reason').classList.add('hidden');
+  $('#brk-modal-actions').classList.remove('hidden');
   $('#break-modal').classList.remove('hidden');
 }
 
 function hideBreakModal() { $('#break-modal').classList.add('hidden'); }
 
-$$('#break-modal .modal-btn').forEach((b) => b.addEventListener('click', async () => {
+async function sendBreakResponse(choice, reason) {
   hideBreakModal();
-  await api.respondBreak(b.dataset.choice);
+  await api.respondBreak(choice, reason);
   if ($('#page-breaks') && !$('#page-breaks').classList.contains('hidden')) updateBrkStatus();
+}
+
+$$('#break-modal .modal-btn').forEach((b) => b.addEventListener('click', async () => {
+  // "approve" requires a reason first — so watchers see why instead of having
+  // to come ask — so it swaps to the reason panel instead of responding right away.
+  if (b.dataset.choice === 'approve') {
+    $('#brk-modal-actions').classList.add('hidden');
+    $('#brk-approve-reason').classList.remove('hidden');
+    $('#brk-approve-reason-input').value = '';
+    $('#brk-approve-reason-input').focus();
+    return;
+  }
+  await sendBreakResponse(b.dataset.choice);
 }));
+
+$('#brk-approve-back').addEventListener('click', () => {
+  $('#brk-approve-reason').classList.add('hidden');
+  $('#brk-modal-actions').classList.remove('hidden');
+});
+$('#brk-approve-send').addEventListener('click', async () => {
+  const input = $('#brk-approve-reason-input');
+  if (!input.value.trim()) { input.reportValidity(); return; }
+  await sendBreakResponse('approve', input.value.trim());
+});
+$('#brk-approve-reason-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('#brk-approve-send').click();
+});
 
 api.onBreakPrompt((d) => showBreakModal(d));
 

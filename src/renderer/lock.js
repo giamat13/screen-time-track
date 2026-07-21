@@ -4,6 +4,8 @@
 
 const el = (id) => document.getElementById(id);
 let totalMs = 0;
+let lastState = null;
+let reasonOpen = false; // "why do you need more time" panel, shown before an approve ping goes out
 
 function fmt(ms) {
   const s = Math.max(0, Math.ceil(ms / 1000));
@@ -14,6 +16,7 @@ function fmt(ms) {
 
 function render(state) {
   if (!state || !state.locked) return;
+  lastState = state;
   const isBreak = state.mode === 'break';
   el('emoji').textContent = isBreak ? '🔒' : '⏳';
   el('title').textContent = isBreak ? 'זמן להפסקה' : 'קום לרגע לבדוק';
@@ -27,26 +30,57 @@ function render(state) {
   el('bar').style.width = pct + '%';
 
   const approve = el('approve');
-  approve.classList.toggle('hidden', !state.showApprove);
   const hint = el('approve-hint');
-  if (state.showApprove) {
+  const reasonPanel = el('approve-reason-panel');
+
+  if (!state.showApprove) {
+    reasonOpen = false;
+    approve.classList.add('hidden');
+    hint.classList.add('hidden');
+    reasonPanel.classList.add('hidden');
+  } else if (reasonOpen) {
+    // mid-tick re-renders (every second) must not clobber the open reason panel
+    approve.classList.add('hidden');
+    hint.classList.add('hidden');
+    reasonPanel.classList.remove('hidden');
+  } else {
+    approve.classList.remove('hidden');
+    reasonPanel.classList.add('hidden');
     if (state.canApproveNow) {
-      approve.disabled = false;
       hint.classList.add('hidden');
     } else {
-      approve.disabled = false; // still clickable — it just shortens the wait to the minimum
       hint.textContent = `לחיצה תשלח הודעה למשגיחים ותשחרר אחרי לפחות ${state.minApproveSeconds} שניות מתחילת הנעילה.`;
       hint.classList.remove('hidden');
     }
-  } else {
-    hint.classList.add('hidden');
   }
 }
 
-el('approve').addEventListener('click', async () => {
-  el('approve').disabled = true;
-  const st = await window.lock.approve();
+// Approve requires writing why — so watchers see the reason on Telegram
+// instead of having to come ask what's going on.
+el('approve').addEventListener('click', () => {
+  reasonOpen = true;
+  el('approve-reason-input').value = '';
+  render(lastState);
+  el('approve-reason-input').focus();
+});
+
+el('approve-reason-back').addEventListener('click', () => {
+  reasonOpen = false;
+  render(lastState);
+});
+
+el('approve-reason-send').addEventListener('click', async () => {
+  const input = el('approve-reason-input');
+  const reason = input.value.trim();
+  if (!reason) { input.reportValidity(); return; }
+  el('approve-reason-send').disabled = true;
+  const st = await window.lock.approve(reason);
+  reasonOpen = false;
   render(st);
+});
+
+el('approve-reason-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') el('approve-reason-send').click();
 });
 
 el('release').addEventListener('click', async () => {
@@ -54,10 +88,13 @@ el('release').addEventListener('click', async () => {
   await window.lock.release();
 });
 
-// Block context menu / key-based escapes at the renderer level too.
+// Block context menu / key-based escapes at the renderer level too — except
+// inside the reason input, which needs normal typing to work.
 window.addEventListener('contextmenu', (e) => e.preventDefault());
 window.addEventListener('keydown', (e) => {
-  // swallow everything except nothing — the window is a dead end by design
+  const typingReason = e.target && e.target.id === 'approve-reason-input';
+  if (typingReason && !e.altKey && !e.metaKey && e.key !== 'Escape' && e.key !== 'Tab') return;
+  // swallow everything else — the window is a dead end by design
   e.preventDefault();
   e.stopPropagation();
 }, true);

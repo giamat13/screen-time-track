@@ -839,12 +839,20 @@
       <h2 id="brk-modal-title">Time for a break!</h2>
       <p class="modal-sub" id="brk-modal-sub">You've been at the computer for a while. Step away and rest your eyes.</p>
       <div class="modal-note hidden" id="brk-modal-note"></div>
-      <div class="modal-actions">
+      <div class="modal-actions" id="brk-modal-actions">
         <button class="btn primary modal-btn" data-choice="break">🚶 אני לוקח הפסקה</button>
         <button class="btn ghost modal-btn" id="brk-approve-btn" data-choice="approve">✋ אישרו לי להמשיך לשחק</button>
         <button class="btn ghost modal-btn danger hidden" id="brk-locknow-btn" data-choice="lockNow">🔒 נעל עכשיו</button>
       </div>
-      <p class="modal-fineprint" id="brk-modal-fine">“אני לוקח הפסקה” נועל את המחשב מיד. “אישרו לי להמשיך לשחק” שולח הודעה למשגיחים ונועל אותך לכמה שניות כדי לקום ולבדוק.</p>
+      <div id="brk-approve-reason" class="hidden">
+        <input type="text" id="brk-approve-reason-input" class="text-input" required
+          style="width:100%;margin:6px 0 14px;box-sizing:border-box" placeholder="למה צריך עוד זמן? (חובה)" maxlength="200" />
+        <div class="modal-actions">
+          <button class="btn primary modal-btn" id="brk-approve-send">שלח בקשה למשגיחים</button>
+          <button class="btn ghost modal-btn" id="brk-approve-back">חזרה</button>
+        </div>
+      </div>
+      <p class="modal-fineprint" id="brk-modal-fine">“אני לוקח הפסקה” נועל את המחשב מיד. “אישרו לי להמשיך לשחק” שולח הודעה למשגיחים (כולל הסיבה שכתבת) ונועל אותך לכמה שניות כדי לקום ולבדוק.</p>
     </div>
   </div>
 
