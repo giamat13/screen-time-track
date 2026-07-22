@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const DATA_FILE = path.join(app.getPath('userData'), 'screen-time-data.json');
+const BACKUP_FILE = DATA_FILE + '.bak';
 // Separate tiny file for an in-force break lock. Kept out of the main data file
 // on purpose: it must be written *synchronously* on every lock tick so a hard
 // power-off leaves an at-most-1s-stale record, independent of the 4s debounce
@@ -98,7 +99,20 @@ let saveTimer = null;
 function load() {
   try {
     if (fs.existsSync(DATA_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      let raw = fs.readFileSync(DATA_FILE, 'utf8');
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        // Main file is corrupt (e.g. truncated by a crash mid-write) — fall back to
+        // the last known-good backup instead of silently resetting to empty defaults.
+        console.error('[store] main file corrupt, trying backup:', e.message);
+        if (fs.existsSync(BACKUP_FILE)) {
+          parsed = JSON.parse(fs.readFileSync(BACKUP_FILE, 'utf8'));
+        } else {
+          throw e;
+        }
+      }
       data = Object.assign(defaults(), parsed);
       data.settings = Object.assign(defaults().settings, parsed.settings || {});
       if (parsed.settings?.breakReminder) {
@@ -180,6 +194,11 @@ function clearLockState() {
 
 function flush() {
   try {
+    // Keep a copy of the last good file before overwriting, so a crash mid-write
+    // (which truncates DATA_FILE) can't destroy history with no way back.
+    if (fs.existsSync(DATA_FILE)) {
+      try { fs.copyFileSync(DATA_FILE, BACKUP_FILE); } catch (e) { /* best-effort */ }
+    }
     fs.writeFileSync(DATA_FILE, JSON.stringify(data));
   } catch (e) {
     console.error('[store] save failed:', e.message);
