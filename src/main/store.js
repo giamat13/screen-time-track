@@ -194,12 +194,12 @@ function clearLockState() {
 
 function flush() {
   try {
-    // Keep a copy of the last good file before overwriting, so a crash mid-write
-    // (which truncates DATA_FILE) can't destroy history with no way back.
-    if (fs.existsSync(DATA_FILE)) {
-      try { fs.copyFileSync(DATA_FILE, BACKUP_FILE); } catch (e) { /* best-effort */ }
-    }
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data));
+    // Write both from the same known-good in-memory snapshot — never copy DATA_FILE's
+    // raw bytes into the backup, or a crash-corrupted main file would clobber the one
+    // copy we could still recover from.
+    const json = JSON.stringify(data);
+    fs.writeFileSync(DATA_FILE, json);
+    fs.writeFileSync(BACKUP_FILE, json);
   } catch (e) {
     console.error('[store] save failed:', e.message);
   }
