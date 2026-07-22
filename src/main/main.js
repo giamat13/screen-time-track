@@ -230,6 +230,7 @@ function startBreakReminder() {
   breakReminder = new BreakReminder({
     isDev,
     getSettings: () => store.getSettings(),
+    getInCall: () => !!(tracker && tracker.inCall),
     powerMonitor,
     onPrompt: () => {
       // Don't steal focus — just beep. If the user already happens to be in the

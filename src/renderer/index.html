@@ -72,7 +72,7 @@
             </div>
             <p class="hero-label" id="hero-label">Today's Screen Time</p>
             <div class="hero-time" id="hero-time">0<small>h</small> 0<small>m</small> 0<small>s</small></div>
-            <div class="hero-current"><span class="ico">&#9636;</span> Currently: <span id="hero-current-app">—</span></div>
+            <div class="hero-current"><span class="ico">&#9636;</span> Currently: <span id="hero-current-app">—</span> <span class="call-badge hidden" id="hero-call-badge">📞 On a call</span></div>
             <div class="hero-idle-banner">
               <span class="ico">&#128564;</span>
               <span id="hero-idle-msg">No activity detected — time not counted</span>
@@ -263,6 +263,20 @@
               <input type="range" id="brk-interval-sec" min="5" max="120" step="5" value="10" />
               <span class="slider-val" id="brk-interval-sec-val">10s</span>
             </div>
+          </div>
+        </div>
+
+        <!-- Call-aware timing -->
+        <div class="card">
+          <div class="card-head"><h3>📞 On a Call</h3></div>
+          <p class="subtle" style="margin:-4px 0 12px">While Zoom, Discord, Google Meet, WhatsApp, Teams, or Slack is using your mic, use these instead. Leave at 0 to keep the normal timing above.</p>
+          <div class="setting">
+            <div><div class="set-title">Break every</div><div class="subtle">Minutes between checks while on a call (0 = use the normal interval)</div></div>
+            <input type="number" class="text-input num" id="brk-call-interval" min="0" max="360" step="5" />
+          </div>
+          <div class="setting">
+            <div><div class="set-title">Break lock length</div><div class="subtle">Minutes locked when a break fires during a call (0 = use the normal length)</div></div>
+            <input type="number" class="text-input num" id="brk-call-lock-min" min="0" max="180" step="1" />
           </div>
         </div>
 

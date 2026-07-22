@@ -18,9 +18,10 @@ const AWAY_RESET_MS = 5 * 60 * 1000;  // away this long → the presence timer r
 // main.js owns the actual BrowserWindow and Telegram client and injects them
 // as callbacks, so this module stays free of Electron imports.
 class BreakReminder {
-  constructor({ isDev, getSettings, powerMonitor, onPrompt, showLock, updateLock, hideLock, sendTelegram, notify, persistLock, clearLock }) {
+  constructor({ isDev, getSettings, getInCall, powerMonitor, onPrompt, showLock, updateLock, hideLock, sendTelegram, notify, persistLock, clearLock }) {
     this._isDev = !!isDev;
     this._getSettings = getSettings;
+    this._getInCall = fn(getInCall);
     this._pm = powerMonitor;
     this._onPrompt = fn(onPrompt);
     this._showLock = fn(showLock);
@@ -245,6 +246,10 @@ class BreakReminder {
   _baseIntervalMs() {
     const s = this._brk();
     if (s.devMode) return Math.max(1, int(s.checkIntervalSeconds, 10)) * 1000;
+    // On a call: less frequent checks, if the user configured a longer interval.
+    if (this._getInCall() && s.callCheckIntervalMinutes) {
+      return int(s.callCheckIntervalMinutes, 60) * 60 * 1000;
+    }
     return int(s.checkIntervalMinutes, 60) * 60 * 1000;
   }
 
@@ -380,7 +385,13 @@ class BreakReminder {
     if (mode === 'break') {
       // In dev mode the break lock is seconds (same clock as the presence timer),
       // never the real 5 minutes — otherwise a quick test traps you for real.
-      durMs = s.devMode ? this._baseIntervalMs() : int(s.breakLockMinutes, 5) * 60 * 1000;
+      if (s.devMode) {
+        durMs = this._baseIntervalMs();
+      } else if (this._getInCall() && s.callBreakLockMinutes) {
+        durMs = int(s.callBreakLockMinutes, 5) * 60 * 1000; // on a call: longer break, if configured
+      } else {
+        durMs = int(s.breakLockMinutes, 5) * 60 * 1000;
+      }
     } else durMs = int(s.approveShortLockSeconds, 10) * 1000;
 
     this._mode = 'locked';

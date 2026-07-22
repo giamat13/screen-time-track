@@ -215,6 +215,7 @@ async function loadDashboard() {
   $('#sess-apps').textContent = st.session.apps;
   $('#sess-focus').textContent = st.session.focus + '%';
   $('#hero-current-app').textContent = st.currentApp || '—';
+  $('#hero-call-badge').classList.toggle('hidden', !st.inCall);
 
   // trend
   $('#trend-today').textContent = fmtShort(d.trend.today);
@@ -505,6 +506,7 @@ async function loadBreaks() {
     beepFrequency: 1000, beepDuration: 200, beepIntervalSeconds: 0.4,
     breakLockMinutes: 5, ignoreBeepMinutes: 5,
     approveShortLockSeconds: 10, approveMinLockSeconds: 20,
+    callCheckIntervalMinutes: 0, callBreakLockMinutes: 0,
     cancelWindowSeconds: 10,
     tier1Minutes: 1, tier1BeepSeconds: 30,
     tier2Minutes: 5, tier2BeepSeconds: 60,
@@ -525,6 +527,10 @@ async function loadBreaks() {
   $('#brk-ignore-min').value = brkSettings.ignoreBeepMinutes;
   $('#brk-approve-short').value = brkSettings.approveShortLockSeconds;
   $('#brk-approve-min').value = brkSettings.approveMinLockSeconds;
+
+  // call-aware cadence
+  $('#brk-call-interval').value = brkSettings.callCheckIntervalMinutes;
+  $('#brk-call-lock-min').value = brkSettings.callBreakLockMinutes;
 
   // escalation
   $('#brk-cancel-win').value = brkSettings.cancelWindowSeconds;
@@ -616,6 +622,9 @@ async function saveBrkSettings() {
     ignoreBeepMinutes: numVal('brk-ignore-min', 5),
     approveShortLockSeconds: numVal('brk-approve-short', 10),
     approveMinLockSeconds: numVal('brk-approve-min', 20),
+
+    callCheckIntervalMinutes: numVal('brk-call-interval', 0),
+    callBreakLockMinutes: numVal('brk-call-lock-min', 0),
 
     cancelWindowSeconds: numVal('brk-cancel-win', 10),
     tier1Minutes: numVal('brk-t1-min', 1),
@@ -1457,6 +1466,7 @@ api.onTick((p) => {
     $('#hero-time').innerHTML = fmtLong(p.todaySeconds);
   }
   $('#hero-current-app').textContent = p.currentApp || '—';
+  $('#hero-call-badge').classList.toggle('hidden', !p.inCall);
   if (p.session) {
     $('#sess-apps').textContent = p.session.apps;
     $('#sess-focus').textContent = p.session.focus + '%';

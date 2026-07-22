@@ -32,6 +32,9 @@ const NAME_MAP = {
   steam: 'Steam',
   whatsapp: 'WhatsApp',
   telegram: 'Telegram',
+  zoom: 'Zoom',
+  teams: 'Microsoft Teams',
+  'ms-teams': 'Microsoft Teams',
   outlook: 'Outlook',
   winword: 'Microsoft Word',
   excel: 'Microsoft Excel',
@@ -44,6 +47,17 @@ const NAME_MAP = {
 
 // Chromium-family browsers the bridge extension can run inside.
 const BROWSERS = new Set(['chrome', 'msedge', 'brave', 'opera', 'vivaldi']);
+
+// Desktop apps we tag as "on a call" when the foreground.ps1 mic-in-use check
+// (registry ConsentStore) comes back true for them.
+const CALL_APPS = new Set(['zoom', 'discord', 'whatsapp', 'teams', 'ms-teams', 'slack']);
+
+// Web meeting sites — matched against the active tab's domain (reported by
+// the bridge extension) to tag browser time as "on a call" too.
+const MEETING_SITES = new Set([
+  'meet.google.com', 'zoom.us', 'teams.microsoft.com', 'web.whatsapp.com',
+  'discord.com', 'slack.com', 'messenger.com'
+]);
 
 // Hostname -> friendly label. Falls back to the bare hostname when unknown.
 const SITE_MAP = {
@@ -113,6 +127,7 @@ class Tracker {
     this._stopping = false;
     this.lastTs = null;
     this.current = null;
+    this.inCall = false;
     this.prevIdle = false;
     // Buffer of recently counted ticks, so that once idle detection actually
     // trips (it can only fire after `idleThreshold` seconds of no input have
@@ -167,6 +182,10 @@ class Tracker {
     // report, attribute time to the actual site (e.g. "YouTube") and note
     // whether a video/track is playing.
     let mediaPlaying = false;
+    // "On a call": either a known desktop call app with the mic in use
+    // (foreground.ps1's registry check), or a known meeting site in the
+    // active browser tab with the extension reporting mic permission granted.
+    let inCall = !!(info.name && CALL_APPS.has(info.name.toLowerCase()) && info.mic);
     if (settings.browserDetail !== false && info.name && BROWSERS.has(info.name.toLowerCase())) {
       const bs = this.getBrowserState();
       if (bs) {
@@ -182,6 +201,7 @@ class Tracker {
           }
           // An ad is not "watching", so it does not count as active media.
           mediaPlaying = !!bs.playing && !bs.ad;
+          if (bs.micGranted && (MEETING_SITES.has(d) || MEETING_SITES.has(base))) inCall = true;
         } else {
           // Extension is installed but reports no active tab / domain →
           // this is not our session (or a blank tab); don't count as "Chrome".
@@ -222,6 +242,7 @@ class Tracker {
       counted = true;
     }
     this.current = appName;
+    this.inCall = inCall;
 
     // Idle detection only trips once `idleThreshold` (or `mediaIdleCap`) seconds
     // of no input have already passed, so the tail of that window was counted
@@ -240,6 +261,7 @@ class Tracker {
       idleSecs: Math.round(idleSecs),
       paused,
       counted,
+      inCall,
       todaySeconds: this.store.getToday().total,
       session: this.getSessionInfo()
     });
@@ -275,7 +297,7 @@ class Tracker {
   }
 
   getStatus() {
-    return { currentApp: this.current, session: this.getSessionInfo() };
+    return { currentApp: this.current, inCall: !!this.inCall, session: this.getSessionInfo() };
   }
 
   stop() {

@@ -149,6 +149,7 @@ h3 { font-size: 15px; margin: 0; font-weight: 600; }
 .hero-time small { font-size: 20px; font-weight: 500; opacity: .8; margin: 0 8px 0 2px; }
 .hero.idle .hero-time, .hero.paused .hero-time { opacity: .55; }
 .hero-current { display: inline-flex; align-items: center; gap: 7px; margin-top: 16px; background: rgba(255,255,255,.16); color: #fff; padding: 7px 12px; border-radius: 8px; font-size: 13px; }
+.call-badge { background: rgba(245,166,35,.25); padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; }
 .hero-idle-banner {
   display: none; align-items: center; gap: 8px;
   background: rgba(255,255,255,.1); border-radius: 8px;

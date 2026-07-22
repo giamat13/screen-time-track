@@ -61,6 +61,12 @@ function defaults() {
         approveShortLockSeconds: 10,// "approve me" from the prompt locks this long
         approveMinLockSeconds: 20,  // "approve me" on the lock screen needs this much lock time first
 
+        // ---- call-aware cadence ----------------------------------------------
+        // While on a call (Zoom/Discord/Meet/etc.), use these instead — e.g. less
+        // frequent but longer breaks. 0 = disabled, falls back to the normal values.
+        callCheckIntervalMinutes: 0,
+        callBreakLockMinutes: 0,
+
         // ---- telegram escalation --------------------------------------------
         // When you press "approve me", the watchers are messaged. If one of them
         // replies /cancel or a negative keyword, we react based on how long the

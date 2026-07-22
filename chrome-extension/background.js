@@ -4,6 +4,8 @@ const ENDPOINT = 'http://127.0.0.1:47832/state';
 
 // tabId -> { playing, ad }: media state in that tab (reported by content.js).
 const mediaState = new Map();
+// tabId -> boolean: mic permission granted, only reported from known meeting sites.
+const micState = new Map();
 
 function domainOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
@@ -39,7 +41,8 @@ async function pushState() {
       domain: domainOf(tab.url),
       audible: !!tab.audible,
       playing: ms.playing === true || !!tab.audible,
-      ad: ms.ad === true
+      ad: ms.ad === true,
+      micGranted: micState.get(tab.id) === true
     };
   }
 
@@ -57,11 +60,15 @@ chrome.tabs.onUpdated.addListener((id, info) => {
   if (info.url || info.title || info.audible !== undefined || info.status === 'complete') pushState();
 });
 chrome.windows.onFocusChanged.addListener(() => pushState());
-chrome.tabs.onRemoved.addListener((id) => mediaState.delete(id));
+chrome.tabs.onRemoved.addListener((id) => { mediaState.delete(id); micState.delete(id); });
 
 chrome.runtime.onMessage.addListener((msg, sender) => {
-  if (msg && msg.type === 'media' && sender.tab) {
+  if (!msg || !sender.tab) return;
+  if (msg.type === 'media') {
     mediaState.set(sender.tab.id, { playing: !!msg.playing, ad: !!msg.ad });
+    pushState();
+  } else if (msg.type === 'mic') {
+    micState.set(sender.tab.id, !!msg.granted);
     pushState();
   }
 });

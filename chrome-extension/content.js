@@ -5,6 +5,32 @@
 (function () {
   let state = { playing: false, ad: false };
 
+  // Meeting sites we bother checking mic permission for — matches
+  // MEETING_SITES in src/main/tracker.js. Only report micGranted here; the
+  // desktop app already knows whether Chrome itself is using the mic
+  // (registry check), so combining the two avoids false positives from an
+  // unrelated tab that merely has mic permission granted.
+  const MEETING_SITES = new Set([
+    'meet.google.com', 'zoom.us', 'teams.microsoft.com', 'web.whatsapp.com',
+    'discord.com', 'slack.com', 'messenger.com'
+  ]);
+
+  function onMeetingSite() {
+    const h = location.hostname.replace(/^www\./, '');
+    const base = h.split('.').slice(-2).join('.');
+    return MEETING_SITES.has(h) || MEETING_SITES.has(base);
+  }
+
+  function reportMic() {
+    if (!onMeetingSite() || !navigator.permissions || !navigator.permissions.query) return;
+    navigator.permissions.query({ name: 'microphone' })
+      .then((status) => {
+        try { chrome.runtime.sendMessage({ type: 'mic', granted: status.state === 'granted' }); }
+        catch (e) { /* extension reloading / context invalidated */ }
+      })
+      .catch(() => {});
+  }
+
   function anyMediaPlaying() {
     const media = document.querySelectorAll('video, audio');
     for (const m of media) {
@@ -42,4 +68,9 @@
 
   // First read shortly after load, once players have initialized.
   setTimeout(() => report(true), 1500);
+
+  if (onMeetingSite()) {
+    reportMic();
+    setInterval(reportMic, 5000);
+  }
 })();
