@@ -1,4 +1,5 @@
 const { spawn } = require('child_process');
+const log = require('./log');
 
 // Blocks Task Manager (the one thing reachable from Ctrl+Alt+Del / Ctrl+Shift+Esc
 // that could kill the lock/beep process) while a lock is active.
@@ -46,14 +47,27 @@ function regToggle(add) {
   return run('reg.exe', args);
 }
 
+// Both paths are logged because this is the one feature that can leave the machine
+// in a bad state if it half-works: blocked but never unblocked. The log says which
+// layer fired, so a stuck DisableTaskMgr can be traced to HKLM or HKCU immediately.
 async function block() {
   const strong = await runScheduledTask(TASK_BLOCK);
-  if (!strong) await regToggle(true); // no elevated task registered — fall back
+  let fallback = null;
+  if (!strong) fallback = await regToggle(true); // no elevated task registered — fall back
+  log.info('taskmgr.block', {
+    layer: strong ? 'HKLM scheduled task' : 'HKCU registry',
+    scheduledTaskOk: strong, registryOk: fallback,
+    effective: strong || fallback === true,
+  });
 }
 
 async function unblock() {
-  await runScheduledTask(TASK_UNBLOCK);
-  await regToggle(false);
+  const task = await runScheduledTask(TASK_UNBLOCK);
+  const reg = await regToggle(false);
+  log.info('taskmgr.unblock', {
+    scheduledTaskOk: task, registryOk: reg,
+    note: (!task && !reg) ? 'nothing to clear (normal when no lock was active)' : undefined,
+  });
 }
 
 module.exports = { block, unblock };

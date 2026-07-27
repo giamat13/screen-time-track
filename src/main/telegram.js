@@ -25,7 +25,10 @@ function isNegativeReply(text) {
 // Minimal Telegram Bot API client that polls getUpdates and can send messages.
 // No third-party dependencies — just Node's https.
 class TelegramBot {
-  constructor({ getConfig, onMessage, onCommand, onLearnUser, onConflict }) {
+  constructor({ getConfig, onMessage, onCommand, onLearnUser, onConflict, logger }) {
+    // Injected like the callbacks, so this module keeps its zero-import property.
+    // Nothing here ever logs the bot token — it is a credential.
+    this._log = logger || { info() {}, warn() {}, error() {} };
     this._getConfig = getConfig;            // () => { enabled, botToken, chatIds, ... }
     this._onMessage = typeof onMessage === 'function' ? onMessage : () => {};
     this._onCommand = typeof onCommand === 'function' ? onCommand : () => {};
@@ -40,10 +43,12 @@ class TelegramBot {
 
   start() {
     this._stopped = false;
+    this._log.info('telegram.start', { chatIds: (this._cfg().chatIds || []).length });
     this._poll();
   }
 
   stop() {
+    if (!this._stopped) this._log.info('telegram.stop', {});
     this._stopped = true;
     if (this._activeReq) { try { this._activeReq.destroy(); } catch {} this._activeReq = null; }
   }
@@ -115,12 +120,30 @@ class TelegramBot {
         res.on('end', () => {
           try {
             const json = JSON.parse(raw);
-            resolve(json && json.ok ? { ok: true } : { ok: false, error: (json && json.description) || 'send failed' });
-          } catch { resolve({ ok: false, error: 'bad response' }); }
+            const ok = !!(json && json.ok);
+            // A watcher ping that silently fails is the whole accountability
+            // feature failing open, so both outcomes are recorded.
+            this._log[ok ? 'info' : 'error']('telegram.send', {
+              chatId: String(chatId), ok, status: res.statusCode,
+              error: ok ? undefined : (json && json.description) || 'send failed',
+              chars: text.length,
+            });
+            resolve(ok ? { ok: true } : { ok: false, error: (json && json.description) || 'send failed' });
+          } catch (e) {
+            this._log.error('telegram.send', { chatId: String(chatId), ok: false, status: res.statusCode, error: 'bad response' });
+            resolve({ ok: false, error: 'bad response' });
+          }
         });
       });
-      req.on('error', (e) => resolve({ ok: false, error: (e && e.message) || 'network error' }));
-      req.on('timeout', () => { try { req.destroy(); } catch {} resolve({ ok: false, error: 'timeout' }); });
+      req.on('error', (e) => {
+        this._log.error('telegram.send', { chatId: String(chatId), ok: false, error: (e && e.message) || 'network error' });
+        resolve({ ok: false, error: (e && e.message) || 'network error' });
+      });
+      req.on('timeout', () => {
+        try { req.destroy(); } catch {}
+        this._log.error('telegram.send', { chatId: String(chatId), ok: false, error: 'timeout' });
+        resolve({ ok: false, error: 'timeout' });
+      });
       req.write(body);
       req.end();
     });
@@ -149,17 +172,27 @@ class TelegramBot {
             // another running instance (e.g. dev + installed app sharing the
             // same token) is holding it, so this one gets nothing, ever.
             const now = Date.now();
+            this._log.error('telegram.poll_conflict', {
+              note: 'another instance holds getUpdates for this token — this copy receives nothing',
+              notified: now - this._lastConflictAt > 5 * 60 * 1000,
+            });
             if (now - this._lastConflictAt > 5 * 60 * 1000) {
               this._lastConflictAt = now;
               this._onConflict();
             }
+          } else if (!json || !json.ok) {
+            this._log.warn('telegram.poll_rejected', { status: res.statusCode, description: json && json.description });
           }
-        } catch { /* ignore malformed */ }
+        } catch (e) { this._log.warn('telegram.poll_bad_response', { status: res.statusCode, bytes: raw.length }); }
         // brief spacing so a hard error doesn't hot-loop
         setTimeout(() => this._poll(), 500);
       });
     });
-    req.on('error', () => { this._activeReq = null; if (!this._stopped) setTimeout(() => this._poll(), 3000); });
+    req.on('error', (e) => {
+      this._activeReq = null;
+      this._log.warn('telegram.poll_error', { err: e && e.message, retryMs: 3000 });
+      if (!this._stopped) setTimeout(() => this._poll(), 3000);
+    });
     req.on('timeout', () => { try { req.destroy(); } catch {} });
     this._activeReq = req;
     req.end();

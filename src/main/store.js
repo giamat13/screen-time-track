@@ -2,6 +2,7 @@
 const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const log = require('./log');
 
 const DATA_FILE = path.join(app.getPath('userData'), 'screen-time-data.json');
 const BACKUP_FILE = DATA_FILE + '.bak';
@@ -114,6 +115,34 @@ function defaults() {
   };
 }
 
+// ---- durable writes --------------------------------------------------------
+// THE data-loss bug. fs.writeFileSync returns as soon as the bytes are in the OS
+// page cache; it does not mean they reached the disk. NTFS journals *metadata*
+// (the file's new length) but not file *data*, so an unclean shutdown before the
+// cache flushes replays a file of exactly the right size filled with zeros.
+//
+// That is not a theory: after the 2026-07-27 power loss both screen-time-data.json
+// and its .bak were 110406 bytes of 0x00 — same length as the last good save, no
+// content. Three wipes, three unclean shutdowns in the Windows event log. The
+// write-to-temp-then-rename dance below is worthless without this fsync, because
+// renaming a file whose data never landed just gives the zeros a permanent name.
+function writeFileSyncDurable(file, contents) {
+  const fd = fs.openSync(file, 'w');
+  try {
+    fs.writeFileSync(fd, contents);
+    fs.fsyncSync(fd);   // block until the platter/SSD actually has it
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// A file of the right length full of NULs is the fingerprint of the failure
+// above. Worth naming explicitly in the log — "JSON parse error" alone sent the
+// last two investigations after the wrong cause.
+function looksZeroed(raw) {
+  return raw.length > 0 && !/[^\0]/.test(raw);
+}
+
 let data = defaults();
 let saveTimer = null;
 // Set when a data file exists on disk but we could not read it. While true the
@@ -123,31 +152,98 @@ let loadFailed = false;
 // Set when a different live instance owns the data file; we then never write.
 let foreignOwner = false;
 
+// Every place a full copy of the data might live, most-authoritative first.
+// DATA_FILE and BACKUP_FILE are written from the same in-memory state in the same
+// flush, so they die together — as they did on 2026-07-27. The dated snapshots are
+// the only independent generation, so they belong in this chain: up to
+// SNAPSHOT_SLOT_HOURS stale beats the empty defaults that used to be the only
+// other option, and beats a human restoring it by hand.
+function recoveryCandidates() {
+  const snaps = [];
+  for (const dir of SNAPSHOT_DIRS) {
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch (e) { continue; }   // missing dir is normal
+    for (const n of names) {
+      if (!n.startsWith('screen-time-data.') || !n.endsWith('.json')) continue;
+      const file = path.join(dir, n);
+      try { snaps.push({ file, kind: 'snapshot', mtime: fs.statSync(file).mtimeMs }); }
+      catch (e) { /* vanished under us */ }
+    }
+  }
+  snaps.sort((a, b) => b.mtime - a.mtime);   // newest snapshot first
+  return [{ file: DATA_FILE, kind: 'main' }, { file: BACKUP_FILE, kind: 'backup' }, ...snaps];
+}
+
+// Move a copy we could not parse out of the way instead of letting the next flush
+// overwrite it. The bytes are evidence — the zeroed pair from 2026-07-27 is what
+// identified the real cause, and they would have been gone by morning.
+function quarantine(file) {
+  try {
+    const dir = path.join(app.getPath('userData'), 'corrupt');
+    fs.mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, `${path.basename(file)}.${Date.now()}`);
+    fs.copyFileSync(file, dest);
+    log.warn('store.load.quarantined', { from: file, to: dest });
+  } catch (e) {
+    log.error('store.load.quarantine_failed', { file, err: e.message });
+  }
+}
+
+// Walk the chain and return the first copy that parses.
+function readBestCopy() {
+  const failures = [];
+  for (const cand of recoveryCandidates()) {
+    let raw;
+    try {
+      raw = fs.readFileSync(cand.file, 'utf8');
+    } catch (e) {
+      if (e.code !== 'ENOENT') log.warn('store.load.unreadable', { kind: cand.kind, file: cand.file, err: e.message });
+      continue;                                   // a missing copy is normal, not a failure
+    }
+    const zeroed = looksZeroed(raw);
+    try {
+      const parsed = JSON.parse(raw);
+      log.info('store.load.candidate_ok', {
+        kind: cand.kind, file: cand.file, bytes: raw.length,
+        days: Object.keys(parsed.days || {}).length,
+        habits: (parsed.habits || []).length,
+        installedAt: parsed.installedAt,
+        skippedBroken: failures.length,
+      });
+      return { parsed, cand, failures };
+    } catch (e) {
+      failures.push({ kind: cand.kind, file: cand.file, bytes: raw.length, zeroed });
+      log.error('store.load.candidate_corrupt', {
+        kind: cand.kind, file: cand.file, bytes: raw.length,
+        allZeros: zeroed,
+        diagnosis: zeroed
+          ? 'file has correct length but no content — unclean shutdown before the page cache flushed (missing fsync)'
+          : 'malformed JSON — truncated or partially written',
+        head: JSON.stringify(raw.slice(0, 80)),
+        err: e.message,
+      });
+      if (cand.kind !== 'snapshot') quarantine(cand.file);
+    }
+  }
+  return { parsed: null, cand: null, failures };
+}
+
 function load() {
   claimOwnership();
   try {
-    let raw = null;
-    if (fs.existsSync(DATA_FILE)) {
-      raw = fs.readFileSync(DATA_FILE, 'utf8');
-    } else if (fs.existsSync(BACKUP_FILE)) {
-      // Main file vanished (deleted, failed rename) — the backup is still good.
-      console.error('[store] main file missing, loading backup');
-      raw = fs.readFileSync(BACKUP_FILE, 'utf8');
+    const { parsed, cand, failures } = readBestCopy();
+    if (parsed && failures.length) {
+      // We are alive only because of a fallback. Say so loudly — this is the line
+      // that should be at the top of the next investigation.
+      log.error('store.load.RECOVERED_FROM_FALLBACK', {
+        recoveredFrom: cand.kind, file: cand.file,
+        lostCopies: failures.map((f) => `${f.kind}${f.zeroed ? '(zeroed)' : '(corrupt)'}`).join(','),
+        note: cand.kind === 'snapshot'
+          ? 'up to 3h of tracking may be missing — both live copies were unusable'
+          : 'main file was unusable, backup carried the data',
+      });
     }
-    if (raw !== null) {
-      let parsed;
-      try {
-        parsed = JSON.parse(raw);
-      } catch (e) {
-        // Main file is corrupt (e.g. truncated by a crash mid-write) — fall back to
-        // the last known-good backup instead of silently resetting to empty defaults.
-        console.error('[store] main file corrupt, trying backup:', e.message);
-        if (fs.existsSync(BACKUP_FILE)) {
-          parsed = JSON.parse(fs.readFileSync(BACKUP_FILE, 'utf8'));
-        } else {
-          throw e;
-        }
-      }
+    if (parsed !== null) {
       data = Object.assign(defaults(), parsed);
       data.settings = Object.assign(defaults().settings, parsed.settings || {});
       if (parsed.settings?.breakReminder) {
@@ -192,12 +288,35 @@ function load() {
         data.forest.distractions = Object.assign(defaults().forest.distractions, parsed.forest.distractions || {});
         data.forest.settings = Object.assign(defaults().forest.settings, parsed.forest.settings || {});
       }
+      log.info('store.load.ok', {
+        source: cand.kind,
+        days: Object.keys(data.days).length,
+        firstDay: Object.keys(data.days).sort()[0],
+        lastDay: Object.keys(data.days).sort().slice(-1)[0],
+        totalHours: +(Object.values(data.days).reduce((s, d) => s + (d.total || 0), 0) / 3600).toFixed(2),
+        habits: (data.habits || []).length,
+        goals: Object.keys(data.goals || {}).length,
+        trees: (data.forest.trees || []).length,
+        coins: data.forest.coins,
+        streak: data.streaks && data.streaks.current,
+        readOnly: isReadOnly(),
+      });
+    } else if (failures.length) {
+      // Copies existed but none parsed. Empty defaults in memory are fine; *saving*
+      // them would overwrite every copy with nothing — the exact path that turns one
+      // bad read into total loss. Go read-only and let the user decide.
+      loadFailed = true;
+      log.error('store.load.ALL_COPIES_UNREADABLE', {
+        tried: failures.length,
+        detail: failures.map((f) => `${f.kind}:${f.bytes}b${f.zeroed ? ':ZEROED' : ''}`).join(' '),
+        action: 'saving disabled — originals copied to the corrupt/ folder',
+      });
+    } else {
+      log.info('store.load.fresh_install', { dataFile: DATA_FILE });
     }
   } catch (e) {
-    console.error('[store] load failed:', e.message);
-    // Data exists on disk but we could not read it. Starting from empty defaults is
-    // fine in memory, but saving them would overwrite both copies with nothing — the
-    // exact path that turned one bad read into total data loss. Go read-only instead.
+    log.error('store.load.threw', { err: e.message, stack: e.stack });
+    // Same rule as above: never let a failed read become an empty-defaults save.
     loadFailed = fs.existsSync(DATA_FILE) || fs.existsSync(BACKUP_FILE);
     data = defaults();
   }
@@ -229,23 +348,42 @@ function ownedByOther() {
 }
 
 function claimOwnership() {
+  const prev = readOwner();
   foreignOwner = ownedByOther();
   if (foreignOwner) {
-    const owner = readOwner();
-    console.error(`[store] another instance owns the data (pid ${owner.pid}) — not saving`);
+    log.error('store.owner.refused', {
+      ownerPid: prev.pid, ownerExe: prev.exe,
+      ageMs: Date.now() - (prev.ts || 0),
+      me: process.execPath,
+      action: 'saving disabled for this instance so it cannot clobber the live one',
+    });
     return false;
+  }
+  if (prev && prev.pid !== process.pid) {
+    log.warn('store.owner.taking_over', {
+      stalePid: prev.pid, staleExe: prev.exe,
+      ageMs: Date.now() - (prev.ts || 0),
+      alive: pidAlive(prev.pid),
+      why: Date.now() - (prev.ts || 0) > OWNER_STALE_MS ? 'claim expired' : 'owner process is gone',
+    });
   }
   try {
     fs.writeFileSync(OWNER_FILE, JSON.stringify({ pid: process.pid, exe: process.execPath, ts: Date.now() }));
-  } catch (e) { console.error('[store] owner claim failed:', e.message); }
+    log.info('store.owner.claimed', { exe: process.execPath });
+  } catch (e) { log.error('store.owner.claim_failed', { err: e.message }); }
   return true;
 }
 
 function releaseOwnership() {
   try {
     const owner = readOwner();
-    if (owner && owner.pid === process.pid) fs.unlinkSync(OWNER_FILE);
-  } catch (e) { /* nothing useful to do on exit */ }
+    if (owner && owner.pid === process.pid) {
+      fs.unlinkSync(OWNER_FILE);
+      log.info('store.owner.released', {});
+    } else {
+      log.warn('store.owner.release_skipped', { ownerPid: owner && owner.pid, me: process.pid });
+    }
+  } catch (e) { log.warn('store.owner.release_failed', { err: e.message }); }
 }
 
 function scheduleSave() {
@@ -258,21 +396,28 @@ function scheduleSave() {
 // is wall-clock, the break keeps "ticking" even while the machine is powered
 // off — reboot to escape and you just come back to whatever is left (or to no
 // lock at all if the whole break elapsed while you were off).
+// Durable, not merely synchronous: writeFileSync alone would leave this in the page
+// cache, and "survives a hard power-off" is the entire point of the file.
 function saveLockState(state) {
-  try { fs.writeFileSync(LOCK_FILE, JSON.stringify(state)); }
-  catch (e) { console.error('[store] lock save failed:', e.message); }
+  try { writeFileSyncDurable(LOCK_FILE, JSON.stringify(state)); }
+  catch (e) { log.error('store.lock.save_failed', { err: e.message, state }); }
 }
 
 function readLockState() {
   try {
-    if (fs.existsSync(LOCK_FILE)) return JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
-  } catch (e) { console.error('[store] lock read failed:', e.message); }
+    if (fs.existsSync(LOCK_FILE)) {
+      const s = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
+      log.info('store.lock.read', { ...s, remainingMs: s && s.endsAt ? s.endsAt - Date.now() : null });
+      return s;
+    }
+  } catch (e) { log.error('store.lock.read_failed', { err: e.message }); }
   return null;
 }
 
 function clearLockState() {
-  try { if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE); }
-  catch (e) { console.error('[store] lock clear failed:', e.message); }
+  try {
+    if (fs.existsSync(LOCK_FILE)) { fs.unlinkSync(LOCK_FILE); log.info('store.lock.cleared', {}); }
+  } catch (e) { log.error('store.lock.clear_failed', { err: e.message }); }
 }
 
 // Keep one copy per 3-hour slot, so a wipe that a guard *doesn't* catch is still
@@ -293,37 +438,102 @@ function rollingSnapshot(json) {
       const file = path.join(dir, `screen-time-data.${slot}.json`);
       // First write of the slot wins: it holds the state as it was before anything
       // in this window had a chance to damage it.
-      if (!fs.existsSync(file)) fs.writeFileSync(file, json);
+      if (!fs.existsSync(file)) {
+        writeFileSyncDurable(file, json);
+        log.info('store.snapshot.written', { slot, file, bytes: json.length });
+      }
+      // Carry the forensic log along with the data it explains, so the record
+      // survives losing the whole profile folder (Documents is covered by File
+      // History / OneDrive; userData is not). Overwritten each slot — the log
+      // only grows, so the newest copy is always the most complete.
+      try {
+        const src = log.currentFile();
+        if (fs.existsSync(src)) {
+          fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
+          fs.copyFileSync(src, path.join(dir, 'logs', path.basename(src)));
+        }
+      } catch (e) { log.warn('store.snapshot.log_copy_failed', { dir, err: e.message }); }
     } catch (e) {
-      console.error(`[store] snapshot failed (${dir}):`, e.message);
+      log.error('store.snapshot.failed', { dir, slot, err: e.message });
     }
   }
 }
 
+// Last successful flush, so the next one can notice the payload shrinking — the
+// signature of the in-memory state having been reset under us.
+const lastFlush = { bytes: 0, days: 0, loggedAt: 0, count: 0 };
+
 function flush() {
-  if (loadFailed) return;                     // never overwrite data we failed to read
+  if (loadFailed) {                           // never overwrite data we failed to read
+    log.warn('store.flush.blocked', { reason: 'load-failed', pendingDays: Object.keys(data.days).length });
+    return;
+  }
   if (foreignOwner || ownedByOther()) {       // never clobber a live instance's data
+    if (!foreignOwner) {
+      const o = readOwner();
+      log.error('store.flush.blocked', { reason: 'foreign-owner', ownerPid: o && o.pid, ownerExe: o && o.exe });
+    }
     foreignOwner = true;
     return;
   }
   try {
     // Keep the claim fresh so a second instance can tell we are still alive.
     fs.writeFileSync(OWNER_FILE, JSON.stringify({ pid: process.pid, exe: process.execPath, ts: Date.now() }));
-  } catch (e) { /* non-fatal: the data write below still matters more */ }
+  } catch (e) { log.warn('store.flush.owner_refresh_failed', { err: e.message }); }
+
+  const started = Date.now();
+  let json;
   try {
     // Write both from the same known-good in-memory snapshot — never copy DATA_FILE's
     // raw bytes into the backup, or a crash-corrupted main file would clobber the one
     // copy we could still recover from.
-    const json = JSON.stringify(data);
-    rollingSnapshot(json);
-    // Write to a temp file and rename, so a crash mid-write can't truncate the real
-    // file. On NTFS the rename replaces atomically.
-    fs.writeFileSync(TMP_FILE, json);
-    fs.renameSync(TMP_FILE, DATA_FILE);
-    fs.writeFileSync(BACKUP_FILE, json);
+    json = JSON.stringify(data);
   } catch (e) {
-    console.error('[store] save failed:', e.message);
+    log.error('store.flush.serialize_failed', { err: e.message, stack: e.stack });
+    return;
   }
+
+  const days = Object.keys(data.days).length;
+  if (lastFlush.bytes && (json.length < lastFlush.bytes * 0.9 || days < lastFlush.days)) {
+    // The guards above are meant to make this impossible. If it ever fires, this is
+    // the line that names the bug we have been unable to reproduce.
+    log.error('store.flush.SHRANK', {
+      wasBytes: lastFlush.bytes, nowBytes: json.length,
+      wasDays: lastFlush.days, nowDays: days,
+      habits: (data.habits || []).length,
+      trees: (data.forest.trees || []).length,
+      stack: new Error('flush shrink').stack,
+    });
+  }
+
+  try {
+    rollingSnapshot(json);
+    // Temp file + rename so a crash mid-write can't leave a half-written main file.
+    // The fsync inside writeFileSyncDurable is what makes the rename mean anything:
+    // without it the rename is journaled while the data is not, and a power loss
+    // publishes a correctly-named file full of zeros.
+    writeFileSyncDurable(TMP_FILE, json);
+    fs.renameSync(TMP_FILE, DATA_FILE);
+    writeFileSyncDurable(BACKUP_FILE, json);
+  } catch (e) {
+    log.error('store.flush.failed', { err: e.message, code: e.code, stack: e.stack, bytes: json.length });
+    return;
+  }
+
+  lastFlush.count++;
+  const changed = json.length !== lastFlush.bytes || days !== lastFlush.days;
+  // Every flush is logged at most once a minute — enough to be a heartbeat that
+  // pins down how far the app got before it died, without 15k lines a day.
+  if (changed && Date.now() - lastFlush.loggedAt > 60000) {
+    log.info('store.flush.ok', {
+      bytes: json.length, deltaBytes: json.length - lastFlush.bytes, days,
+      todaySec: Math.round((data.days[dateKey()] || {}).total || 0),
+      flushes: lastFlush.count, ms: Date.now() - started,
+    });
+    lastFlush.loggedAt = Date.now();
+  }
+  lastFlush.bytes = json.length;
+  lastFlush.days = days;
 }
 
 function dateKey(d = new Date()) {
@@ -337,6 +547,9 @@ function ensureDay(key) {
   if (!data.days[key]) {
     const now = new Date().toISOString();
     data.days[key] = { apps: {}, total: 0, firstSeen: now, lastSeen: now, hours: new Array(24).fill(0), studyApps: {}, study: 0 };
+    // Day rollover: one line a day, and the cheapest way to prove the history was
+    // still intact at midnight if it is missing the morning after.
+    log.info('store.day.created', { day: key, daysNow: Object.keys(data.days).length });
   }
   // Backfill buckets for days created before those features existed.
   if (!Array.isArray(data.days[key].hours)) data.days[key].hours = new Array(24).fill(0);
@@ -395,6 +608,9 @@ function debugSubtractToday(seconds) {
   seconds = Math.max(0, Math.round(Number(seconds) || 0));
   const key = dateKey();
   const day = data.days[key];
+  // Dev-only, but it deliberately destroys real recorded time. If today's total ever
+  // looks wrong, this line answers "did someone press the debug button?" instantly.
+  log.warn('store.debug.subtract_today', { seconds, dayTotalBefore: day && Math.round(day.total) });
   if (seconds <= 0 || !day) return getToday();
   const hour = new Date().getHours();
   let remaining = seconds;
@@ -1018,7 +1234,13 @@ function updateHabit(id, partial) {
 }
 
 function deleteHabit(id) {
+  const gone = (data.habits || []).find((x) => x.id === id);
   data.habits = (data.habits || []).filter((x) => x.id !== id);
+  // Destructive and irreversible from the UI — always worth a line.
+  log.warn('store.habit.deleted', {
+    id, name: gone && gone.name, entries: gone && (gone.entries || []).length,
+    remaining: data.habits.length,
+  });
   flush();
   return getHabits();
 }
@@ -1165,6 +1387,19 @@ function setSettings(partial) {
       );
     }
   }
+  // Log which keys actually moved, with the token redacted — settings changes are a
+  // prime suspect whenever behaviour changes "for no reason".
+  const changed = {};
+  for (const k of Object.keys(partial)) {
+    if (k === 'breakReminder') continue;      // nested; summarised below
+    if (JSON.stringify(data.settings[k]) !== JSON.stringify(next[k])) changed[k] = next[k];
+  }
+  if (partial.breakReminder) {
+    const br = { ...next.breakReminder };
+    if (br.telegram) br.telegram = { ...br.telegram, botToken: br.telegram.botToken ? '<set>' : '' };
+    changed.breakReminder = br;
+  }
+  if (Object.keys(changed).length) log.info('store.settings.changed', changed);
   data.settings = next;
   flush();
   return data.settings;

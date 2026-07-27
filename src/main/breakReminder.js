@@ -18,7 +18,10 @@ const AWAY_RESET_MS = 5 * 60 * 1000;  // away this long → the presence timer r
 // main.js owns the actual BrowserWindow and Telegram client and injects them
 // as callbacks, so this module stays free of Electron imports.
 class BreakReminder {
-  constructor({ isDev, getSettings, getInCall, powerMonitor, onPrompt, showLock, updateLock, hideLock, sendTelegram, notify, persistLock, clearLock }) {
+  constructor({ isDev, getSettings, getInCall, powerMonitor, onPrompt, showLock, updateLock, hideLock, sendTelegram, notify, persistLock, clearLock, logger }) {
+    // Injected rather than required, so this module keeps its "no Electron
+    // imports" property (log.js needs app.getPath) and stays testable standalone.
+    this._log = logger || { info() {}, warn() {}, error() {} };
     this._isDev = !!isDev;
     this._getSettings = getSettings;
     this._getInCall = fn(getInCall);
@@ -95,7 +98,15 @@ class BreakReminder {
   resumeLock(saved) {
     if (!saved || saved.mode !== 'break') return false;
     const until = int(saved.lockUntilAt, 0);
-    if (until - Date.now() <= 0) { this._clearLock(); return false; } // break already over
+    const leftMs = until - Date.now();
+    // The reboot-escape path. Logging both outcomes makes it provable after the
+    // fact whether a lock was honoured across a restart or quietly dropped.
+    this._log.warn('break.resume_after_restart', {
+      persistedUntil: new Date(until).toISOString(),
+      remainingSec: Math.round(leftMs / 1000),
+      outcome: leftMs <= 0 ? 'break elapsed while powered off — nothing to restore' : 're-locking for the remainder',
+    });
+    if (leftMs <= 0) { this._clearLock(); return false; } // break already over
     this.start();
     this._mode = 'locked';
     this._lockMode = 'break';
@@ -219,14 +230,16 @@ class BreakReminder {
     const elapsedMs = this._approveSentAt ? Date.now() - this._approveSentAt : 0;
 
     if (elapsedMs <= int(s.cancelWindowSeconds, 10) * 1000) {
+      this._log.warn('break.telegram_veto', { tier: 'instant', elapsedMs, standalone: !this._approveSentAt });
       this._lock('break');                 // instant veto
       return;
     }
-    let beepSec;
-    if (elapsedMs <= int(s.tier1Minutes, 1) * 60000) beepSec = int(s.tier1BeepSeconds, 30);
-    else if (elapsedMs <= int(s.tier2Minutes, 5) * 60000) beepSec = int(s.tier2BeepSeconds, 60);
-    else if (elapsedMs <= int(s.tier3Minutes, 10) * 60000) beepSec = int(s.tier3BeepSeconds, 300);
-    else beepSec = int(s.tier3PlusBeepSeconds, 300);
+    let beepSec, tier;
+    if (elapsedMs <= int(s.tier1Minutes, 1) * 60000) { beepSec = int(s.tier1BeepSeconds, 30); tier = 1; }
+    else if (elapsedMs <= int(s.tier2Minutes, 5) * 60000) { beepSec = int(s.tier2BeepSeconds, 60); tier = 2; }
+    else if (elapsedMs <= int(s.tier3Minutes, 10) * 60000) { beepSec = int(s.tier3BeepSeconds, 300); tier = 3; }
+    else { beepSec = int(s.tier3PlusBeepSeconds, 300); tier = '3+'; }
+    this._log.warn('break.telegram_veto', { tier, elapsedMs, beepSec, then: 'lock' });
 
     // Beep for a grace period, then lock — unless the user enters the app and
     // chooses to take a break (or lock now) before the timeout.
@@ -352,10 +365,19 @@ class BreakReminder {
     const freq = int(s.beepFrequency, 1000);
     const dur = int(s.beepDuration, 200);
     const interval = Math.round(num(s.beepIntervalSeconds, 0.4) * 1000);
+    this._log.warn('break.beep_start', {
+      phase, allowApprove, timeoutSec: timeoutMs ? Math.round(timeoutMs / 1000) : null,
+      inCall: this._getInCall(), devMode: !!s.devMode,
+    });
     const script = `while($true){try{[Console]::Beep(${freq},${dur})}catch{};Start-Sleep -Milliseconds ${interval}}`;
     this._beepProc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, detached: false });
-    this._beepProc.on('error', () => {});
-    this._beepProc.on('exit', () => { this._beepProc = null; });
+    // A beep process that dies silently is the alarm failing open — you would
+    // never hear it, and the only evidence would be a lock arriving unannounced.
+    this._beepProc.on('error', (e) => this._log.error('break.beep_spawn_failed', { err: e.message }));
+    this._beepProc.on('exit', (code) => {
+      if (this._mode === 'beeping' && code !== 0) this._log.error('break.beep_died_while_beeping', { code });
+      this._beepProc = null;
+    });
 
     this._onPrompt(this.promptPayload());
   }
@@ -399,6 +421,11 @@ class BreakReminder {
     this._lockStartAt = Date.now();
     this._lockUntilAt = Date.now() + durMs;
     this._lockApproved = false;
+    this._log.warn('break.lock', {
+      mode, durationSec: Math.round(durMs / 1000),
+      until: new Date(this._lockUntilAt).toISOString(),
+      devMode: !!s.devMode, inCall: this._getInCall(), persisted: mode === 'break',
+    });
     this._persistBreakLock();   // no-op for the brief approve-short lock
     this._showLock(this.getLockState());
   }
@@ -412,6 +439,12 @@ class BreakReminder {
   }
 
   _unlock() {
+    this._log.info('break.unlock', {
+      wasMode: this._lockMode,
+      heldSec: this._lockStartAt ? Math.round((Date.now() - this._lockStartAt) / 1000) : null,
+      earlyByMs: this._lockUntilAt ? this._lockUntilAt - Date.now() : null,
+      approved: this._lockApproved,
+    });
     this._clearLock();
     this._hideLock();
     this._mode = 'idle';

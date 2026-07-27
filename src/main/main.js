@@ -52,6 +52,7 @@ if (isDev) {
   app.setPath('userData', path.join(app.getPath('appData'), 'screen-time-track-dev'));
 }
 
+const log = require('./log');
 const store = require('./store');
 const { Tracker } = require('./tracker');
 const browserBridge = require('./browserBridge');
@@ -77,16 +78,78 @@ const remindersFired = new Set();
 
 const ASSETS = path.join(__dirname, '..', '..', 'assets');
 
+// ---- crash / exit instrumentation -----------------------------------------
+// Anything that kills the process without reaching before-quit leaves the data
+// file exactly as durable as the last fsync. These handlers make the difference
+// between "it just died" and a named cause in the log.
+process.on('uncaughtException', (err) => {
+  log.error('process.uncaughtException', { err: err && err.message, stack: err && err.stack });
+  // Flush, but deliberately do NOT clear running.flag: an uncaught exception
+  // leaves the process in an undefined state, and the next start should say so
+  // rather than reporting a clean exit.
+  try { store.flush(); } catch (e) { /* best effort */ }
+});
+process.on('unhandledRejection', (reason) => {
+  log.error('process.unhandledRejection', {
+    reason: reason && (reason.message || String(reason)),
+    stack: reason && reason.stack,
+  });
+});
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  try {
+    process.on(sig, () => {
+      log.warn('process.signal', { sig, note: 'external kill — flushing before exit' });
+      try { store.flush(); } catch (e) { /* best effort */ }
+      log.sessionEnd(sig);
+      app.quit();
+    });
+  } catch (e) { /* signal not supported on this platform */ }
+}
+process.on('exit', (code) => log.info('process.exit', { code }));
+
 // ---- single instance ------------------------------------------------------
 if (!app.requestSingleInstanceLock()) {
+  log.warn('app.single_instance_lock_lost', {
+    exe: process.execPath, flavor: FLAVOR,
+    note: 'another copy of this flavor is already running — quitting immediately',
+  });
   app.quit();
 } else {
-  app.on('second-instance', () => showWindow());
+  app.on('second-instance', (e, argv) => {
+    log.info('app.second_instance', { argv });
+    showWindow();
+  });
   bootstrap();
 }
 
 function bootstrap() {
   app.whenReady().then(() => {
+    // First line of every run: who we are, and whether the last run died badly.
+    // The previous-run verdict is what identifies a power loss as a power loss
+    // instead of sending the next investigation after a phantom app bug.
+    const unclean = log.sessionStart({
+      flavor: FLAVOR,
+      version: app.getVersion(),
+      electron: process.versions.electron,
+      node: process.versions.node,
+      chrome: process.versions.chrome,
+      exe: process.execPath,
+      argv: process.argv.slice(1).join(' '),
+      userData: app.getPath('userData'),
+      startHidden,
+      wasOpenedAtLogin: app.getLoginItemSettings().wasOpenedAtLogin,
+      uptimeBeforeStartSec: Math.round(require('os').uptime()),
+    });
+    if (unclean) {
+      // os.uptime() near the app's start means the machine itself rebooted, which
+      // separates "Electron crashed" from "the power went out".
+      log.error('app.unclean_previous_run', {
+        systemUptimeSec: Math.round(require('os').uptime()),
+        likelyCause: require('os').uptime() < 600
+          ? 'machine rebooted recently — power loss or forced restart is the prime suspect'
+          : 'machine has been up a while — the app process itself died',
+      });
+    }
     store.load();
     if (store.isReadOnly()) {
       // Existing data on disk we couldn't read. Saving is disabled so we don't
@@ -124,7 +187,17 @@ function bootstrap() {
     // keep running in tray; do not quit
   });
 
+  app.on('render-process-gone', (e, wc, details) => {
+    log.error('app.render_process_gone', { reason: details.reason, exitCode: details.exitCode });
+  });
+  app.on('child-process-gone', (e, details) => {
+    log.error('app.child_process_gone', {
+      type: details.type, name: details.name, reason: details.reason, exitCode: details.exitCode,
+    });
+  });
+
   app.on('before-quit', () => {
+    log.info('app.before_quit', { locked, suspended, tracking: store.getSettings().tracking });
     isQuitting = true;
     unregisterInstance();
     if (forestTicker) clearInterval(forestTicker);
@@ -137,6 +210,7 @@ function bootstrap() {
     browserBridge.stop();
     store.flush();
     store.releaseOwnership(); // let the next instance take over immediately
+    log.sessionEnd('before-quit'); // clears running.flag => next start reads "clean"
   });
 }
 
@@ -227,10 +301,27 @@ function refreshTrayMenu() {
 
 // ---- power / idle events --------------------------------------------------
 function setupPowerEvents() {
-  powerMonitor.on('lock-screen', () => { locked = true; });
-  powerMonitor.on('unlock-screen', () => { locked = false; });
-  powerMonitor.on('suspend', () => { suspended = true; });
-  powerMonitor.on('resume', () => { suspended = false; });
+  // Every one of these is a moment the machine might not come back from, so each
+  // one flushes first and is logged. 'shutdown' is the only clean warning Windows
+  // ever gives us that the power is about to go away.
+  powerMonitor.on('lock-screen', () => { locked = true; log.info('power.lock_screen', {}); store.flush(); });
+  powerMonitor.on('unlock-screen', () => { locked = false; log.info('power.unlock_screen', {}); });
+  powerMonitor.on('suspend', () => {
+    suspended = true;
+    log.warn('power.suspend', { note: 'flushing — the machine may not come back' });
+    store.flush();
+  });
+  powerMonitor.on('resume', () => {
+    suspended = false;
+    log.info('power.resume', { systemUptimeSec: Math.round(require('os').uptime()) });
+  });
+  powerMonitor.on('shutdown', () => {
+    log.warn('power.shutdown', { note: 'OS is shutting down — final flush' });
+    store.flush();
+    log.sessionEnd('power-shutdown');
+  });
+  powerMonitor.on('on-battery', () => log.warn('power.on_battery', { note: 'unplugged — an abrupt power loss is now possible' }));
+  powerMonitor.on('on-ac', () => log.info('power.on_ac', {}));
 }
 
 // ---- tracker --------------------------------------------------------------
@@ -241,6 +332,7 @@ function isPaused() {
 function startBreakReminder() {
   breakReminder = new BreakReminder({
     isDev,
+    logger: log,
     getSettings: () => store.getSettings(),
     getInCall: () => !!(tracker && tracker.inCall),
     powerMonitor,
@@ -273,6 +365,7 @@ function telegramEnabled() {
 
 function startTelegram() {
   telegram = new TelegramBot({
+    logger: log,
     getConfig: () => (store.getSettings().breakReminder || {}).telegram || {},
     onMessage: (msg) => {
       // The bot keeps polling whenever a token is set, but it only exerts power
@@ -473,7 +566,7 @@ function applyAutoLaunch(enabled) {
     }
     app.setLoginItemSettings(opts);
   } catch (e) {
-    console.error('[main] auto-launch failed:', e.message);
+    log.error('app.auto_launch_failed', { err: e.message });
   }
 }
 
