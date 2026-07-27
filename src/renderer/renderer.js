@@ -497,6 +497,12 @@ $('#set-brk-devmode').addEventListener('change', async (e) => {
 });
 $('#set-reset').addEventListener('click', async () => { await api.resetSession(); toast('Session reset'); if (!$('#page-dashboard').classList.contains('hidden')) loadDashboard(); });
 
+$('#set-export').addEventListener('click', async () => {
+  const res = await api.exportData();
+  if (res && res.ok) toast('Exported');
+  else if (res && res.error) toast(`Export failed: ${res.error}`);
+});
+
 // ---------- break reminder ----------
 async function loadBreaks() {
   const s = await api.getSettings();
@@ -1176,7 +1182,9 @@ function habitCard(h) {
   const hlpUnit = h.unit === 'minutes' ? 'min' : h.unit === 'custom' ? customUnitLabel(h) : '×';
 
   const pausePeriodWord = h.freqType === 'weekly' ? 'week' : 'day';
-  const pauseTitle = h.paused ? `Resume — currently paused this ${pausePeriodWord}` : `Pause this ${pausePeriodWord} (doesn't break your streak)`;
+  const pauseTitle = h.paused
+    ? `Resume — currently paused this ${pausePeriodWord}`
+    : `Pause for one or more ${pausePeriodWord}s (doesn't break your streak)`;
 
   const card = document.createElement('div');
   card.className = 'habit-card' + (h.periodDone ? ' done' : '') + (h.paused ? ' paused' : '');
@@ -1200,7 +1208,7 @@ function habitCard(h) {
           <span class="${streakCls}"><span class="fl">🔥</span> ${h.streak} ${periodWord} streak</span>
           <span class="subtle small">· best ${h.bestStreak}</span>
           <span class="freeze-tag${h.freezers === 0 ? ' empty' : ''}" title="${h.freezers} freeze ${h.freqType === 'weekly' ? 'week' : 'day'}${h.freezers !== 1 ? 's' : ''} available">🧊 ${h.freezers}</span>
-          ${h.paused ? `<span class="paused-tag" title="This ${pausePeriodWord} is paused — won't count against your streak">⏸ paused</span>` : ''}
+          ${h.paused ? `<span class="paused-tag" title="Paused — won't count against your streak">⏸ paused${h.pausedPeriodsLeft > 1 ? ` · ${h.pausedPeriodsLeft} ${pausePeriodWord}s left` : ''}</span>` : ''}
           ${peak}
         </div>
         <div class="xp-bar"><div class="xp-fill" data-w="${xpPct}"></div></div>
@@ -1239,7 +1247,10 @@ function habitCard(h) {
   card.querySelector('.hab-undo').addEventListener('click', () => doLogHabit(h.id, -step, card));
   card.querySelector('.hab-edit').addEventListener('click', () => openHabitForm(h));
   card.querySelector('.hab-del').addEventListener('click', () => deleteHabitConfirmed(h.id));
-  card.querySelector('.hab-pause').addEventListener('click', () => doPauseHabit(h.id));
+  card.querySelector('.hab-pause').addEventListener('click', () => {
+    if (h.paused) doPauseHabit(h.id);                                  // resume: no prompt
+    else openHabitPauseModal(h.id, h.freqType === 'weekly');
+  });
   wireLogPanel(card, h);
   return card;
 }
@@ -1308,12 +1319,36 @@ async function doLogHabit(id, amount, card, when) {
   renderHabitSummary(all);
 }
 
-async function doPauseHabit(id) {
-  const updated = await api.pauseHabit(id);
+async function doPauseHabit(id, periods = 1) {
+  const updated = await api.pauseHabit(id, periods);
   if (!updated) return;
-  toast(updated.paused ? 'Paused — streak protected' : 'Resumed');
+  toast(updated.paused
+    ? (periods > 1 ? `Paused for ${periods} — streak protected` : 'Paused — streak protected')
+    : 'Resumed');
   loadHabits();
 }
+
+// Pausing asks for a length so a longer break doesn't have to be re-armed each day.
+// Resuming is a single click, no question asked.
+function openHabitPauseModal(id, weekly) {
+  const word = weekly ? 'weeks' : 'days';
+  $('#habpause-sub').textContent =
+    `Paused ${word} don't count against your streak. You can resume any time.`;
+  $$('#habpause-choices .modal-btn').forEach((b) => {
+    b.textContent = `${b.dataset.periods} ${b.dataset.periods === '1' ? word.slice(0, -1) : word}`;
+  });
+  $('#habpause-modal').dataset.habitId = id;
+  $('#habpause-modal').classList.remove('hidden');
+}
+
+function closeHabitPauseModal() { $('#habpause-modal').classList.add('hidden'); }
+
+$('#habpause-cancel-btn').addEventListener('click', closeHabitPauseModal);
+$$('#habpause-choices .modal-btn').forEach((b) => b.addEventListener('click', () => {
+  const id = $('#habpause-modal').dataset.habitId;
+  closeHabitPauseModal();
+  doPauseHabit(id, Number(b.dataset.periods));
+}));
 
 async function deleteHabitConfirmed(id) {
   await api.deleteHabit(id);

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, powerMonitor, nativeImage, Notification, globalShortcut } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, powerMonitor, nativeImage, Notification, globalShortcut, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -88,6 +88,17 @@ if (!app.requestSingleInstanceLock()) {
 function bootstrap() {
   app.whenReady().then(() => {
     store.load();
+    if (store.isReadOnly()) {
+      // Existing data on disk we couldn't read. Saving is disabled so we don't
+      // overwrite it — tell the user rather than silently dropping today's tracking.
+      dialog.showErrorBox(
+        'Screen Time — not saving',
+        'Saving is disabled to protect your existing data: either it could not be ' +
+        'read, or another copy of Screen Time is already running and owns it ' +
+        '(check for an installed copy in the tray).\n\nTime will not be recorded ' +
+        `until that is resolved. Dated backups are in:\n${path.join(app.getPath('userData'), 'backups')}`
+      );
+    }
     registerInstance();
     // Defensive: if a previous run crashed while locked, this undoes a
     // leftover DisableTaskMgr so the user is never permanently locked out.
@@ -125,6 +136,7 @@ function bootstrap() {
     if (reminderScheduler) clearInterval(reminderScheduler);
     browserBridge.stop();
     store.flush();
+    store.releaseOwnership(); // let the next instance take over immediately
   });
 }
 
@@ -635,12 +647,29 @@ function setupIpc() {
   ipcMain.handle('reminders:set', (_e, r) => store.setReminder(r));
   ipcMain.handle('reminders:delete', (_e, id) => store.deleteReminder(id));
 
+  // Manual escape hatch: write the whole store somewhere the app can never touch.
+  ipcMain.handle('data:export', async () => {
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Export Screen Time data',
+      defaultPath: path.join(app.getPath('documents'), `screen-time-data.${stamp}.json`),
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (canceled || !filePath) return { ok: false };
+    try {
+      fs.writeFileSync(filePath, JSON.stringify(store.raw(), null, 2));
+      return { ok: true, filePath };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
   ipcMain.handle('habits:get', () => store.getHabits());
   ipcMain.handle('habits:add', (_e, h) => store.addHabit(h));
   ipcMain.handle('habits:update', (_e, id, partial) => store.updateHabit(id, partial));
   ipcMain.handle('habits:delete', (_e, id) => store.deleteHabit(id));
   ipcMain.handle('habits:log', (_e, id, amount, when) => store.logHabit(id, amount, when));
-  ipcMain.handle('habits:pause', (_e, id) => store.toggleHabitPause(id));
+  ipcMain.handle('habits:pause', (_e, id, periods) => store.toggleHabitPause(id, periods));
   ipcMain.handle('debug:addHabitFreezers', (_e, id, count) => store.debugAddHabitFreezers(id, count));
 
   // ---- forest ----

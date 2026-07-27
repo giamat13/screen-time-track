@@ -5,6 +5,27 @@ const path = require('path');
 
 const DATA_FILE = path.join(app.getPath('userData'), 'screen-time-data.json');
 const BACKUP_FILE = DATA_FILE + '.bak';
+const TMP_FILE = DATA_FILE + '.tmp';
+// Two builds (the installed app and one launched from the repo) share this userData
+// dir, and Electron's single-instance lock does not hold across them. Two instances
+// each flushing their own in-memory state means the one that started from empty
+// defaults wins — which is how a full history gets erased. This file records who owns
+// the data; a process that does not own it refuses to write.
+const OWNER_FILE = path.join(app.getPath('userData'), 'owner.json');
+const OWNER_STALE_MS = 90 * 1000;
+// Dated generational copies — the only thing that survives a wipe of both files above.
+// Written to two places on purpose: the userData copy is convenient, but it dies with
+// the folder it protects. Documents is covered by File History / OneDrive, so a copy
+// there survives losing the profile folder entirely.
+const SNAPSHOT_DIRS = [
+  path.join(app.getPath('userData'), 'backups'),
+  path.join(app.getPath('documents'), 'ScreenTime Backups'),
+];
+// One snapshot per 3-hour slot. Nothing here is ever auto-deleted — deleting old
+// copies is exactly what left nothing to recover from. Prune by hand if it matters;
+// at a few hundred KB per file this costs well under a GB a year.
+const SNAPSHOT_SLOT_HOURS = 3;
+let lastSnapshotSlot = null;
 // Separate tiny file for an in-force break lock. Kept out of the main data file
 // on purpose: it must be written *synchronously* on every lock tick so a hard
 // power-off leaves an at-most-1s-stale record, independent of the 4s debounce
@@ -95,11 +116,25 @@ function defaults() {
 
 let data = defaults();
 let saveTimer = null;
+// Set when a data file exists on disk but we could not read it. While true the
+// store refuses to write, so a transient read error can never be laundered into
+// an empty-defaults save that destroys the only copies we have.
+let loadFailed = false;
+// Set when a different live instance owns the data file; we then never write.
+let foreignOwner = false;
 
 function load() {
+  claimOwnership();
   try {
+    let raw = null;
     if (fs.existsSync(DATA_FILE)) {
-      let raw = fs.readFileSync(DATA_FILE, 'utf8');
+      raw = fs.readFileSync(DATA_FILE, 'utf8');
+    } else if (fs.existsSync(BACKUP_FILE)) {
+      // Main file vanished (deleted, failed rename) — the backup is still good.
+      console.error('[store] main file missing, loading backup');
+      raw = fs.readFileSync(BACKUP_FILE, 'utf8');
+    }
+    if (raw !== null) {
       let parsed;
       try {
         parsed = JSON.parse(raw);
@@ -160,9 +195,57 @@ function load() {
     }
   } catch (e) {
     console.error('[store] load failed:', e.message);
+    // Data exists on disk but we could not read it. Starting from empty defaults is
+    // fine in memory, but saving them would overwrite both copies with nothing — the
+    // exact path that turned one bad read into total data loss. Go read-only instead.
+    loadFailed = fs.existsSync(DATA_FILE) || fs.existsSync(BACKUP_FILE);
     data = defaults();
   }
   return data;
+}
+
+// True when the store is refusing to write, either because it could not read existing
+// data or because another live instance owns the file.
+function isReadOnly() { return loadFailed || foreignOwner; }
+
+function readOwner() {
+  try {
+    if (!fs.existsSync(OWNER_FILE)) return null;
+    return JSON.parse(fs.readFileSync(OWNER_FILE, 'utf8'));
+  } catch (e) { return null; }
+}
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; }       // signal 0 only tests existence
+  catch (e) { return e.code === 'EPERM'; }         // alive but owned by someone else
+}
+
+// Another instance owns the data if it wrote the owner file recently and is still up.
+function ownedByOther() {
+  const owner = readOwner();
+  if (!owner || owner.pid === process.pid) return false;
+  if (Date.now() - (owner.ts || 0) > OWNER_STALE_MS) return false;  // crashed instance
+  return pidAlive(owner.pid);
+}
+
+function claimOwnership() {
+  foreignOwner = ownedByOther();
+  if (foreignOwner) {
+    const owner = readOwner();
+    console.error(`[store] another instance owns the data (pid ${owner.pid}) — not saving`);
+    return false;
+  }
+  try {
+    fs.writeFileSync(OWNER_FILE, JSON.stringify({ pid: process.pid, exe: process.execPath, ts: Date.now() }));
+  } catch (e) { console.error('[store] owner claim failed:', e.message); }
+  return true;
+}
+
+function releaseOwnership() {
+  try {
+    const owner = readOwner();
+    if (owner && owner.pid === process.pid) fs.unlinkSync(OWNER_FILE);
+  } catch (e) { /* nothing useful to do on exit */ }
 }
 
 function scheduleSave() {
@@ -192,13 +275,51 @@ function clearLockState() {
   catch (e) { console.error('[store] lock clear failed:', e.message); }
 }
 
+// Keep one copy per 3-hour slot, so a wipe that a guard *doesn't* catch is still
+// recoverable. DATA_FILE and BACKUP_FILE are written from the same in-memory state and
+// are always the same generation — they protect against a torn write, not bad data.
+function snapshotSlot(d = new Date()) {
+  const hour = Math.floor(d.getHours() / SNAPSHOT_SLOT_HOURS) * SNAPSHOT_SLOT_HOURS;
+  return `${dateKey(d)}_${String(hour).padStart(2, '0')}`;
+}
+
+function rollingSnapshot(json) {
+  const slot = snapshotSlot();
+  if (lastSnapshotSlot === slot) return;
+  lastSnapshotSlot = slot;
+  for (const dir of SNAPSHOT_DIRS) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `screen-time-data.${slot}.json`);
+      // First write of the slot wins: it holds the state as it was before anything
+      // in this window had a chance to damage it.
+      if (!fs.existsSync(file)) fs.writeFileSync(file, json);
+    } catch (e) {
+      console.error(`[store] snapshot failed (${dir}):`, e.message);
+    }
+  }
+}
+
 function flush() {
+  if (loadFailed) return;                     // never overwrite data we failed to read
+  if (foreignOwner || ownedByOther()) {       // never clobber a live instance's data
+    foreignOwner = true;
+    return;
+  }
+  try {
+    // Keep the claim fresh so a second instance can tell we are still alive.
+    fs.writeFileSync(OWNER_FILE, JSON.stringify({ pid: process.pid, exe: process.execPath, ts: Date.now() }));
+  } catch (e) { /* non-fatal: the data write below still matters more */ }
   try {
     // Write both from the same known-good in-memory snapshot — never copy DATA_FILE's
     // raw bytes into the backup, or a crash-corrupted main file would clobber the one
     // copy we could still recover from.
     const json = JSON.stringify(data);
-    fs.writeFileSync(DATA_FILE, json);
+    rollingSnapshot(json);
+    // Write to a temp file and rename, so a crash mid-write can't truncate the real
+    // file. On NTFS the rename replaces atomically.
+    fs.writeFileSync(TMP_FILE, json);
+    fs.renameSync(TMP_FILE, DATA_FILE);
     fs.writeFileSync(BACKUP_FILE, json);
   } catch (e) {
     console.error('[store] save failed:', e.message);
@@ -769,6 +890,18 @@ function enrichHabit(h) {
   const pausedSet = habitPausedSet(h);
   const paused = pausedSet.has(currentPeriodKey(weekly));
 
+  // How much of the current pause is still ahead, so the UI can say "paused for N"
+  // instead of implying it has to be renewed today.
+  let pausedPeriodsLeft = 0;
+  if (paused) {
+    const step = weekly ? 7 : 1;
+    const d = weekly ? weekStart() : new Date();
+    while (pausedSet.has(dateKey(d)) && pausedPeriodsLeft < 400) {
+      pausedPeriodsLeft++;
+      d.setDate(d.getDate() + step);
+    }
+  }
+
   let periodCount, best;
   const { streak, freezers, frozenPeriods } = calcHabitStreak(map, h.createdAt, effectiveTarget, weekly, pausedSet, h.freezerBonus || 0);
   if (weekly) {
@@ -832,6 +965,7 @@ function enrichHabit(h) {
     freezers,
     frozenPeriods,
     paused,
+    pausedPeriodsLeft,
     totalDone,
     entryCount: entries.length,
     xp,
@@ -893,14 +1027,31 @@ function deleteHabit(id) {
 // this week for weekly ones). Unlike a freezer, this is manual and doesn't cost
 // anything — it just excludes the period from both the habit's own streak and the
 // main streak instead of counting it as a miss.
-function toggleHabitPause(id) {
+// `periods` > 1 pauses that many periods in a row starting now (days for a daily
+// habit, weeks for a weekly one), so a break longer than a day doesn't have to be
+// re-armed every morning. Toggling while paused ends the whole run, not just today.
+function toggleHabitPause(id, periods = 1) {
   const h = (data.habits || []).find((x) => x.id === id);
   if (!h) return null;
   if (!Array.isArray(h.pausedPeriods)) h.pausedPeriods = [];
-  const key = currentPeriodKey(h.freqType === 'weekly');
-  const idx = h.pausedPeriods.indexOf(key);
-  if (idx >= 0) h.pausedPeriods.splice(idx, 1);
-  else h.pausedPeriods.push(key);
+  const weekly = h.freqType === 'weekly';
+  const key = currentPeriodKey(weekly);
+
+  if (h.pausedPeriods.includes(key)) {
+    // Resuming: drop the current period and everything still ahead of it, so one
+    // click cancels the rest of a multi-day pause. Past periods stay as they were.
+    h.pausedPeriods = h.pausedPeriods.filter((k) => k < key);
+  } else {
+    const n = Math.min(Math.max(Math.round(Number(periods)) || 1, 1), 365);
+    const start = weekly ? weekStart() : new Date();
+    for (let i = 0; i < n; i++) {
+      const d = new Date(start);
+      d.setDate(d.getDate() + i * (weekly ? 7 : 1));
+      const k = dateKey(d);
+      if (!h.pausedPeriods.includes(k)) h.pausedPeriods.push(k);
+    }
+    h.pausedPeriods.sort();
+  }
   flush();
   return enrichHabit(h);
 }
@@ -1158,6 +1309,8 @@ module.exports = {
   DATA_FILE,
   load,
   flush,
+  isReadOnly,
+  releaseOwnership,
   saveLockState,
   readLockState,
   clearLockState,
