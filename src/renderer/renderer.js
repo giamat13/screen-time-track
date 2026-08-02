@@ -838,19 +838,24 @@ function renderGlobalLimit(dash) {
 async function renderTimeBudget() {
   const status = await api.getTimeBudgetStatus();
   $('#time-budget-on').checked = status.enabled;
+  $('#time-budget-rollover').checked = status.rollover;
   const mins = status.enabled ? status.startMinutes : 60;
   $('#time-budget-pick').value = mins;
   $('#time-budget-pick').disabled = !status.enabled;
   $('#time-budget-val').textContent = `${mins}m`;
+  const bonusBits = [];
+  if (status.earnedSeconds > 0) bonusBits.push(`+${Math.round(status.earnedSeconds / 60)}m from habits`);
+  if (status.rolloverSeconds > 0) bonusBits.push(`+${Math.round(status.rolloverSeconds / 60)}m rolled over`);
   $('#time-budget-status').textContent = status.enabled
-    ? `Today: ${fmt(status.usedSeconds)} / ${fmtShort(status.budgetSeconds)}${status.earnedSeconds > 0 ? ` (+${Math.round(status.earnedSeconds / 60)}m from habits)` : ''}`
+    ? `Today: ${fmt(status.usedSeconds)} / ${fmtShort(status.budgetSeconds)}${bonusBits.length ? ` (${bonusBits.join(', ')})` : ''}`
     : 'Off';
 }
 
 async function saveTimeBudget() {
   const on = $('#time-budget-on').checked;
   const mins = parseInt($('#time-budget-pick').value, 10);
-  await api.setSettings({ timeBudget: { enabled: on, startMinutes: mins } });
+  const rollover = $('#time-budget-rollover').checked;
+  await api.setSettings({ timeBudget: { enabled: on, startMinutes: mins, rollover } });
   await renderTimeBudget();
   toast(on ? `Time budget: ${mins}m/day` : 'Time budget disabled');
 }
@@ -1028,6 +1033,9 @@ $('#time-budget-pick').addEventListener('input', () => {
   $('#time-budget-val').textContent = `${$('#time-budget-pick').value}m`;
 });
 $('#time-budget-pick').addEventListener('change', () => {
+  if ($('#time-budget-on').checked) saveTimeBudget();
+});
+$('#time-budget-rollover').addEventListener('change', () => {
   if ($('#time-budget-on').checked) saveTimeBudget();
 });
 

@@ -115,6 +115,8 @@ function defaults() {
         enabled: false,     // when on, exceeding the budget locks the machine (see timeBudget.js)
         startMinutes: 60,   // daily screen-time allowance before the lock kicks in; habits with
                              // a timeReward top this up for the day (see getTimeBudgetEarnedSecondsToday)
+        rollover: true,     // on by default whenever the feature is on: yesterday's unused
+                             // allowance (if any) is added to today's budget (see getRolloverSecondsFromYesterday)
       },
     }
   };
@@ -783,22 +785,44 @@ function setGoal(appName, targetSeconds) {
   return data.goals;
 }
 
-function getTodayPlaySeconds() {
-  const day = data.days[dateKey()];
+function getPlaySecondsForDay(key) {
+  const day = data.days[key];
   if (!day) return 0;
   return Math.max(0, (day.total || 0) - (day.study || 0));
 }
+function getTodayPlaySeconds() { return getPlaySecondsForDay(dateKey()); }
+
+// Yesterday's unused allowance, if rollover is on. There's no historical snapshot
+// of startMinutes (unlike goals), so yesterday's budget is approximated using
+// today's currently-configured startMinutes + yesterday's actual habit earnings —
+// only yesterday is ever looked at, so this can't compound across multiple days.
+// Requires an actual tracked day yesterday; no day record means no rollover,
+// rather than assuming a fresh install's silent "day" was entirely unused.
+function getRolloverSecondsFromYesterday(startSeconds) {
+  const cfg = (data.settings && data.settings.timeBudget) || {};
+  if (cfg.rollover === false) return 0;
+  const y = new Date();
+  y.setDate(y.getDate() - 1);
+  const yKey = dateKey(y);
+  if (!data.days[yKey]) return 0;
+  const yUsed = getPlaySecondsForDay(yKey);
+  const yBudget = startSeconds + getTimeBudgetEarnedSecondsForDay(yKey);
+  return Math.max(0, yBudget - yUsed);
+}
 
 function getTimeBudgetStatus() {
-  const cfg = (data.settings && data.settings.timeBudget) || { enabled: false, startMinutes: 60 };
+  const cfg = (data.settings && data.settings.timeBudget) || { enabled: false, startMinutes: 60, rollover: true };
   const startSeconds = Math.max(0, Math.round((cfg.startMinutes || 0) * 60));
   const earnedSeconds = getTimeBudgetEarnedSecondsToday();
+  const rolloverSeconds = getRolloverSecondsFromYesterday(startSeconds);
   return {
     enabled: !!cfg.enabled,
     startMinutes: cfg.startMinutes || 0,
+    rollover: cfg.rollover !== false,
     startSeconds,
     earnedSeconds,
-    budgetSeconds: startSeconds + earnedSeconds,
+    rolloverSeconds,
+    budgetSeconds: startSeconds + earnedSeconds + rolloverSeconds,
     usedSeconds: getTodayPlaySeconds(),
   };
 }
@@ -1365,20 +1389,23 @@ function logHabit(id, amount = 1, when = null) {
   return enrichHabit(h);
 }
 
-// Sum of timeReward minutes across every positive habit-log entry made today,
-// for habits that have a reward configured. Feeds the time-budget lock (see
-// timeBudget.js) — every logged completion tops up today's screen-time allowance.
-function getTimeBudgetEarnedSecondsToday() {
-  const today = dateKey();
+// Sum of timeReward minutes across every positive habit-log entry made on the
+// given day, for habits that have a reward configured. Feeds the time-budget
+// lock (see timeBudget.js) — every logged completion tops up that day's
+// screen-time allowance.
+function getTimeBudgetEarnedSecondsForDay(key) {
   let sec = 0;
   for (const h of (data.habits || [])) {
     const reward = Math.max(0, Number(h.timeReward) || 0);
     if (!reward) continue;
     for (const en of habitEntries(h)) {
-      if (en.amount > 0 && dateKey(new Date(en.ts)) === today) sec += reward * 60;
+      if (en.amount > 0 && dateKey(new Date(en.ts)) === key) sec += reward * 60;
     }
   }
   return sec;
+}
+function getTimeBudgetEarnedSecondsToday() {
+  return getTimeBudgetEarnedSecondsForDay(dateKey());
 }
 
 // ---- main-streak unification ----
