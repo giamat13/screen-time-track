@@ -102,10 +102,14 @@ class TimeBudget {
   }
 
   // Lock-screen "I did a habit" action: log it, then re-check — if the top-up
-  // brings usage back under budget this unlocks immediately.
+  // brings usage back under budget this unlocks immediately. Minutes habits
+  // earn their reward per-full-target (see store.timeRewardMinutesFor), so a
+  // single tap here logs the whole target — otherwise it'd only earn a sliver
+  // of the reward shown on the button.
   logHabitAndCheck(habitId) {
     if (!this._locked) return this.getLockState();
-    this._store.logHabit(habitId, 1);
+    const h = (this._store.getHabits() || []).find((x) => x.id === habitId);
+    if (h) this._store.logHabit(habitId, h.unit === 'minutes' ? Math.max(1, h.target || 1) : 1);
     this.check();
     return this.getLockState();
   }

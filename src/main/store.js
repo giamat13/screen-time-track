@@ -1389,6 +1389,23 @@ function logHabit(id, amount = 1, when = null) {
   return enrichHabit(h);
 }
 
+// How many screen-time minutes a single log entry of `amount` earns for habit
+// `h`. Count/custom habits are "time per 1" — the reward scales directly with
+// however many units you logged in that entry (log 3 at once, get 3x). Minutes
+// habits are "time per X minutes" where X is the habit's own target — logging
+// the full target earns the full reward, a partial duration earns proportionally
+// less. Falls back to a flat per-1 scale for track-only minutes habits (target
+// 0), since there's no target to divide by.
+function timeRewardMinutesFor(h, amount) {
+  const reward = Math.max(0, Number(h.timeReward) || 0);
+  if (!reward || !(amount > 0)) return 0;
+  if (habitUnit(h) === 'minutes') {
+    const target = clampTarget('minutes', h.target);
+    if (target > 0) return reward * (amount / target);
+  }
+  return reward * amount;
+}
+
 // Sum of timeReward minutes across every positive habit-log entry made on the
 // given day, for habits that have a reward configured. Feeds the time-budget
 // lock (see timeBudget.js) — every logged completion tops up that day's
@@ -1396,10 +1413,9 @@ function logHabit(id, amount = 1, when = null) {
 function getTimeBudgetEarnedSecondsForDay(key) {
   let sec = 0;
   for (const h of (data.habits || [])) {
-    const reward = Math.max(0, Number(h.timeReward) || 0);
-    if (!reward) continue;
+    if (!(Number(h.timeReward) > 0)) continue;
     for (const en of habitEntries(h)) {
-      if (en.amount > 0 && dateKey(new Date(en.ts)) === key) sec += reward * 60;
+      if (en.amount > 0 && dateKey(new Date(en.ts)) === key) sec += timeRewardMinutesFor(h, en.amount) * 60;
     }
   }
   return sec;
@@ -1668,6 +1684,7 @@ module.exports = {
   setGlobalLimit,
   getTimeBudgetStatus,
   getTodayPlaySeconds,
+  timeRewardMinutesFor,
   getStreaks,
   weeklyReport,
   dayOfWeekStats,
