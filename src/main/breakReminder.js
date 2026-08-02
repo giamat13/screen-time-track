@@ -237,12 +237,8 @@ class BreakReminder {
     if (this._mode !== 'locked' || !this._store) return this.getLockState();
     const h = (this._store.getHabits() || []).find((x) => x.id === habitId);
     if (!h) return this.getLockState();
-    // Minutes habits earn their reward per-full-target (see store.timeRewardMinutesFor),
-    // so a single tap here logs the whole target — otherwise it'd only shave off a
-    // sliver of the minutes shown on the button.
-    const amount = h.unit === 'minutes' ? Math.max(1, h.target || 1) : 1;
-    this._store.logHabit(habitId, amount);
-    const rewardMinutes = this._store.timeRewardMinutesFor(h, amount);
+    this._store.logHabit(habitId, 1);
+    const rewardMinutes = this._store.timeRewardMinutesFor(h, 1);
     const rewardMs = Math.max(0, rewardMinutes) * 60 * 1000;
     if (rewardMs > 0 && this._lockUntilAt) {
       this._lockUntilAt = Math.max(Date.now(), this._lockUntilAt - rewardMs);

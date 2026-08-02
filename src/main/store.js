@@ -1390,19 +1390,11 @@ function logHabit(id, amount = 1, when = null) {
 }
 
 // How many screen-time minutes a single log entry of `amount` earns for habit
-// `h`. Count/custom habits are "time per 1" — the reward scales directly with
-// however many units you logged in that entry (log 3 at once, get 3x). Minutes
-// habits are "time per X minutes" where X is the habit's own target — logging
-// the full target earns the full reward, a partial duration earns proportionally
-// less. Falls back to a flat per-1 scale for track-only minutes habits (target
-// 0), since there's no target to divide by.
+// `h`. Flat "per 1" scaling for every habit type: count/custom earns
+// timeReward per unit logged, minutes habits earn timeReward per minute logged.
 function timeRewardMinutesFor(h, amount) {
   const reward = Math.max(0, Number(h.timeReward) || 0);
   if (!reward || !(amount > 0)) return 0;
-  if (habitUnit(h) === 'minutes') {
-    const target = clampTarget('minutes', h.target);
-    if (target > 0) return reward * (amount / target);
-  }
   return reward * amount;
 }
 
