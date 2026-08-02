@@ -14,9 +14,62 @@ function fmt(ms) {
   return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
 }
 
+// "I did a habit" panel — shared by every lock mode that has reward habits to
+// offer (budget lock always; break/approve-short whenever any habit has a
+// timeReward configured). Logs the habit and re-renders with the result: the
+// budget lock unlocks once usage is back under budget, a break lock instead
+// shaves the habit's timeReward minutes off the remaining countdown.
+function renderHabitPicker(state) {
+  const panel = el('budget-habits-panel');
+  const list = el('budget-habit-list');
+  const habits = state.habits || [];
+  if (!habits.length) {
+    panel.classList.add('hidden');
+    return;
+  }
+  panel.classList.remove('hidden');
+  el('budget-hint').textContent = 'סימנת שהשלמת אחת מההרגלים האלה עכשיו? זה מוסיף זמן:';
+  list.innerHTML = '';
+  for (const h of habits) {
+    const btn = document.createElement('button');
+    btn.className = 'btn approve';
+    btn.style.minWidth = '340px';
+    btn.textContent = `${h.emoji || '✅'} ${h.name} — +${h.timeReward} דק'`;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const st = await window.lock.logHabitForTime(h.id);
+      render(st);
+    });
+    list.appendChild(btn);
+  }
+}
+
+// Time-budget lock: distinct from the break/approve-short flows above — no
+// countdown, no approve-watchers ping, just "log a reward habit to unlock".
+function renderBudget(state) {
+  el('emoji').textContent = '⏳';
+  el('title').textContent = 'נגמר זמן המסך';
+  el('sub').textContent = 'עברת את תקציב הזמן היומי. השלימו הרגל כדי לקבל עוד זמן, או המתינו למחר.';
+  el('count').textContent = fmt(state.overSeconds * 1000);
+  el('bar').style.width = '100%';
+
+  el('approve').classList.add('hidden');
+  el('approve-hint').classList.add('hidden');
+  el('approve-reason-panel').classList.add('hidden');
+  el('release').classList.toggle('hidden', !state.isDev);
+
+  renderHabitPicker(state);
+}
+
 function render(state) {
   if (!state || !state.locked) return;
   lastState = state;
+
+  if (state.mode === 'budget') {
+    renderBudget(state);
+    return;
+  }
+
   const isBreak = state.mode === 'break';
   el('emoji').textContent = isBreak ? '🔒' : '⏳';
   el('title').textContent = isBreak ? 'זמן להפסקה' : 'קום לרגע לבדוק';
@@ -55,6 +108,8 @@ function render(state) {
       hint.classList.remove('hidden');
     }
   }
+
+  renderHabitPicker(state);
 }
 
 // Approve requires writing why — so watchers see the reason on Telegram

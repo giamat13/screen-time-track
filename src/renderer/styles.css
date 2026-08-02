@@ -517,6 +517,7 @@ input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 3
 .hh-cell .hh-tip { display: none; }
 .freeze-tag { font-size: 12px; font-weight: 600; color: #60a5fa; }
 .freeze-tag.empty { color: var(--muted-2); }
+.reward-tag { font-size: 12px; font-weight: 600; color: #34d399; }
 .paused-tag { font-size: 12px; font-weight: 600; color: var(--muted-2); }
 .hab-icon-btn.active { color: var(--amber); border-color: var(--amber); }
 .habit-card.paused { opacity: 0.8; }

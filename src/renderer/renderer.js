@@ -755,6 +755,7 @@ async function loadGoals() {
   goalsData = goals;
   globalLimit = gLimit || 0;
   renderGlobalLimit(dash);
+  renderTimeBudget();
   renderStreak(streaks);
   renderStreakGoals(goals, dash, gLimit);
   renderStreakHabits(habits);
@@ -830,6 +831,28 @@ function renderGlobalLimit(dash) {
   $('#global-limit-val').textContent = fmtShort(mins * 60);
   const used = dash ? ((dash.total || 0) - (dash.studyTotal || 0)) : 0; // study excluded from the limit
   $('#global-limit-status').textContent = on ? `Today: ${fmt(used)} / ${fmtShort(globalLimit)}` : 'Off';
+}
+
+// Independent from the global-limit card above: this is the time-budget lock
+// (Piece C), not the streak-goal system — deliberately not merged with it.
+async function renderTimeBudget() {
+  const status = await api.getTimeBudgetStatus();
+  $('#time-budget-on').checked = status.enabled;
+  const mins = status.enabled ? status.startMinutes : 60;
+  $('#time-budget-pick').value = mins;
+  $('#time-budget-pick').disabled = !status.enabled;
+  $('#time-budget-val').textContent = `${mins}m`;
+  $('#time-budget-status').textContent = status.enabled
+    ? `Today: ${fmt(status.usedSeconds)} / ${fmtShort(status.budgetSeconds)}${status.earnedSeconds > 0 ? ` (+${Math.round(status.earnedSeconds / 60)}m from habits)` : ''}`
+    : 'Off';
+}
+
+async function saveTimeBudget() {
+  const on = $('#time-budget-on').checked;
+  const mins = parseInt($('#time-budget-pick').value, 10);
+  await api.setSettings({ timeBudget: { enabled: on, startMinutes: mins } });
+  await renderTimeBudget();
+  toast(on ? `Time budget: ${mins}m/day` : 'Time budget disabled');
 }
 
 function renderStreak(streaks) {
@@ -994,6 +1017,18 @@ $('#global-limit-pick').addEventListener('input', () => {
 });
 $('#global-limit-pick').addEventListener('change', () => {
   if ($('#global-limit-on').checked) saveGlobalLimit();
+});
+
+// ---- time-budget lock (separate system — see renderTimeBudget/saveTimeBudget) ----
+$('#time-budget-on').addEventListener('change', () => {
+  $('#time-budget-pick').disabled = !$('#time-budget-on').checked;
+  saveTimeBudget();
+});
+$('#time-budget-pick').addEventListener('input', () => {
+  $('#time-budget-val').textContent = `${$('#time-budget-pick').value}m`;
+});
+$('#time-budget-pick').addEventListener('change', () => {
+  if ($('#time-budget-on').checked) saveTimeBudget();
 });
 
 $('#goals-time-pick').addEventListener('input', () => {
@@ -1208,7 +1243,8 @@ function habitCard(h) {
           <span class="${streakCls}"><span class="fl">🔥</span> ${h.streak} ${periodWord} streak</span>
           <span class="subtle small">· best ${h.bestStreak}</span>
           <span class="freeze-tag${h.freezers === 0 ? ' empty' : ''}" title="${h.freezers} freeze ${h.freqType === 'weekly' ? 'week' : 'day'}${h.freezers !== 1 ? 's' : ''} available">🧊 ${h.freezers}</span>
-          ${h.paused ? `<span class="paused-tag" title="Paused — won't count against your streak">⏸ paused${h.pausedPeriodsLeft > 1 ? ` · ${h.pausedPeriodsLeft} ${pausePeriodWord}s left` : ''}</span>` : ''}
+          ${h.timeReward > 0 ? `<span class="reward-tag" title="Logging this adds ${h.timeReward} min of screen time when the time-budget lock is on">⏱ +${h.timeReward}m</span>` : ''}
+          ${h.paused ? `<span class="paused-tag" title="Paused — won't count against your streak">⏸ ${h.pausedForever ? 'paused indefinitely' : `paused${h.pausedPeriodsLeft > 1 ? ` · ${h.pausedPeriodsLeft} ${pausePeriodWord}s left` : ''}`}</span>` : ''}
           ${peak}
         </div>
         <div class="xp-bar"><div class="xp-fill" data-w="${xpPct}"></div></div>
@@ -1323,7 +1359,7 @@ async function doPauseHabit(id, periods = 1) {
   const updated = await api.pauseHabit(id, periods);
   if (!updated) return;
   toast(updated.paused
-    ? (periods > 1 ? `Paused for ${periods} — streak protected` : 'Paused — streak protected')
+    ? (periods === 'forever' ? 'Paused forever — streak protected' : periods > 1 ? `Paused for ${periods} — streak protected` : 'Paused — streak protected')
     : 'Resumed');
   loadHabits();
 }
@@ -1335,6 +1371,7 @@ function openHabitPauseModal(id, weekly) {
   $('#habpause-sub').textContent =
     `Paused ${word} don't count against your streak. You can resume any time.`;
   $$('#habpause-choices .modal-btn').forEach((b) => {
+    if (b.dataset.periods === 'forever') return; // keeps its own label ("Forever"), not a period count
     b.textContent = `${b.dataset.periods} ${b.dataset.periods === '1' ? word.slice(0, -1) : word}`;
   });
   $('#habpause-modal').dataset.habitId = id;
@@ -1347,7 +1384,8 @@ $('#habpause-cancel-btn').addEventListener('click', closeHabitPauseModal);
 $$('#habpause-choices .modal-btn').forEach((b) => b.addEventListener('click', () => {
   const id = $('#habpause-modal').dataset.habitId;
   closeHabitPauseModal();
-  doPauseHabit(id, Number(b.dataset.periods));
+  const p = b.dataset.periods;
+  doPauseHabit(id, p === 'forever' ? 'forever' : Number(p));
 }));
 
 async function deleteHabitConfirmed(id) {
@@ -1454,6 +1492,7 @@ function openHabitForm(habit) {
   $('#hab-custom-unit').value = habForm.customUnit;
   applyUnitToSlider();
   $('#hab-target').value = habit ? habit.target : (habForm.unit === 'minutes' ? 30 : 1);
+  $('#hab-time-reward').value = habit ? (habit.timeReward || 0) : 0;
   syncHabitForm();
   $('#hab-form').classList.remove('hidden');
   $('#hab-name').focus();
@@ -1485,7 +1524,8 @@ $('#hab-save').addEventListener('click', async () => {
     freqType: habForm.freq,
     unit: habForm.unit,
     customUnit: habForm.unit === 'custom' ? habForm.customUnit.trim() : undefined,
-    target: parseInt($('#hab-target').value, 10)
+    target: parseInt($('#hab-target').value, 10),
+    timeReward: parseInt($('#hab-time-reward').value, 10) || 0
   };
   if (editingHabitId) { await api.updateHabit(editingHabitId, payload); toast('Habit updated'); }
   else { await api.addHabit(payload); toast('Habit created 🌱'); }

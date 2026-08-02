@@ -494,6 +494,26 @@
           </div>
           <div id="streak-habits-list"></div>
         </div>
+
+        <div class="card" id="time-budget-card">
+          <div class="card-head">
+            <h3>&#9203; Time Budget Lock</h3>
+            <span class="subtle small">Exceeding your daily allowance locks the computer (log a reward habit to earn more)</span>
+          </div>
+          <div class="goal-row" id="time-budget-row">
+            <div class="goal-info">
+              <div class="goal-name">Daily screen-time allowance</div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <label class="switch"><input type="checkbox" id="time-budget-on" /><span class="slider"></span></label>
+                <div class="slider-ctrl" style="min-width:200px">
+                  <input type="range" id="time-budget-pick" min="10" max="480" step="10" value="60" />
+                  <span class="slider-val" id="time-budget-val">60m</span>
+                </div>
+                <span class="subtle small" id="time-budget-status"></span>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- ============ HABITS ============ -->
@@ -579,6 +599,13 @@
               <input type="range" id="hab-target" min="0" max="20" step="1" value="1" />
               <span class="slider-val" id="hab-target-val">1×</span>
             </div>
+          </div>
+          <div class="setting">
+            <div>
+              <div class="set-title">&#9203; Time Reward</div>
+              <div class="subtle">Minutes of screen time added to today's budget when logged (0 = no bonus)</div>
+            </div>
+            <input type="number" id="hab-time-reward" class="text-input" min="0" max="240" step="5" value="0" style="max-width:100px" />
           </div>
           <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
             <button class="btn ghost" id="hab-cancel">Cancel</button>
@@ -859,6 +886,7 @@
         <button class="btn ghost modal-btn" data-periods="3">3</button>
         <button class="btn primary modal-btn" data-periods="7">7</button>
         <button class="btn ghost modal-btn" data-periods="30">30</button>
+        <button class="btn ghost modal-btn" data-periods="forever">Forever</button>
       </div>
       <div class="modal-actions">
         <button class="btn ghost modal-btn" id="habpause-cancel-btn">Cancel</button>

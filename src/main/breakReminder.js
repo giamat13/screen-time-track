@@ -18,7 +18,7 @@ const AWAY_RESET_MS = 5 * 60 * 1000;  // away this long → the presence timer r
 // main.js owns the actual BrowserWindow and Telegram client and injects them
 // as callbacks, so this module stays free of Electron imports.
 class BreakReminder {
-  constructor({ isDev, getSettings, getInCall, powerMonitor, onPrompt, showLock, updateLock, hideLock, sendTelegram, notify, persistLock, clearLock, logger }) {
+  constructor({ isDev, getSettings, getInCall, powerMonitor, onPrompt, showLock, updateLock, hideLock, sendTelegram, notify, persistLock, clearLock, store, logger }) {
     // Injected rather than required, so this module keeps its "no Electron
     // imports" property (log.js needs app.getPath) and stays testable standalone.
     this._log = logger || { info() {}, warn() {}, error() {} };
@@ -34,6 +34,7 @@ class BreakReminder {
     this._notify = fn(notify);
     this._persistLock = fn(persistLock);     // (state) => void, durably record an in-force break lock
     this._clearLock = fn(clearLock);         // () => void, erase the persisted break lock
+    this._store = store;                     // habit read/log, for the lock screen's "I did a habit" action
 
     this._tick = null;                        // master 1s interval
     this._beepProc = null;
@@ -216,7 +217,37 @@ class BreakReminder {
       canApproveNow: elapsed >= minMs,
       minApproveSeconds: int(s.approveMinLockSeconds, 20),
       isDev: this._isDev,
+      habits: this._rewardHabits(),
     };
+  }
+
+  _rewardHabits() {
+    if (!this._store) return [];
+    return (this._store.getHabits() || [])
+      .filter((h) => (h.timeReward || 0) > 0)
+      .map((h) => ({ id: h.id, name: h.name, emoji: h.emoji, timeReward: h.timeReward }));
+  }
+
+  // Lock-screen "I did a habit" action during a break lock: logs it, then shaves
+  // its timeReward minutes off the remaining lock time — same relief the
+  // time-budget lock offers, applied to a fixed-duration break instead of a
+  // usage budget. Enough reward habits can end the break early; overshooting
+  // just unlocks immediately rather than going negative.
+  logHabitForTime(habitId) {
+    if (this._mode !== 'locked' || !this._store) return this.getLockState();
+    const h = (this._store.getHabits() || []).find((x) => x.id === habitId);
+    if (!h) return this.getLockState();
+    this._store.logHabit(habitId, 1);
+    const rewardMs = Math.max(0, h.timeReward || 0) * 60 * 1000;
+    if (rewardMs > 0 && this._lockUntilAt) {
+      this._lockUntilAt = Math.max(Date.now(), this._lockUntilAt - rewardMs);
+      this._persistBreakLock(); // keep the persisted end time in sync (mirrors approveFromLock)
+    }
+    if (this._lockUntilAt !== null && Date.now() >= this._lockUntilAt) {
+      this._unlock();
+      return { locked: false };
+    }
+    return this.getLockState();
   }
 
   // A negative / veto reply (/cancel or a keyword) arrived from a watcher on

@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('api', {
   setGoal: (appName, targetSec) => ipcRenderer.invoke('goals:set', appName, targetSec),
   getGlobalLimit: () => ipcRenderer.invoke('limit:getGlobal'),
   setGlobalLimit: (seconds) => ipcRenderer.invoke('limit:setGlobal', seconds),
+  getTimeBudgetStatus: () => ipcRenderer.invoke('timeBudget:getStatus'),
   getStreaks: () => ipcRenderer.invoke('streaks:get'),
   getWeeklyReport: () => ipcRenderer.invoke('weekly:get'),
 
@@ -71,5 +72,6 @@ contextBridge.exposeInMainWorld('lock', {
   getState: () => ipcRenderer.invoke('lock:getState'),
   approve: (reason) => ipcRenderer.invoke('lock:approve', reason),
   release: () => ipcRenderer.invoke('lock:release'),
+  logHabitForTime: (habitId) => ipcRenderer.invoke('lock:logHabitForTime', habitId),
   onTick: (cb) => ipcRenderer.on('lock:tick', (_e, d) => cb(d)),
 });

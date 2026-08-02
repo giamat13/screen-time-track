@@ -57,6 +57,7 @@ const store = require('./store');
 const { Tracker } = require('./tracker');
 const browserBridge = require('./browserBridge');
 const { BreakReminder } = require('./breakReminder');
+const { TimeBudget } = require('./timeBudget');
 const { TelegramBot } = require('./telegram');
 const taskmgrBlock = require('./taskmgrBlock');
 const { createForestEngine, SPECIES: FOREST_SPECIES, ACHIEVEMENTS: FOREST_ACHIEVEMENTS } = require('./forest');
@@ -67,6 +68,7 @@ let tracker = null;
 let forest = null;
 let forestTicker = null;
 let breakReminder = null;
+let timeBudget = null;
 let telegram = null;
 let lockWin = null;
 let lockRefocus = null;
@@ -175,6 +177,7 @@ function bootstrap() {
     startTracker();
     startForest();
     startBreakReminder();
+    startTimeBudget();
     startTelegram();
     startReminderScheduler();
 
@@ -348,6 +351,7 @@ function startBreakReminder() {
     notify: (title, body) => { try { new Notification({ title, body }).show(); } catch (e) { /* headless */ } },
     persistLock: (state) => store.saveLockState(state),
     clearLock: () => store.clearLockState(),
+    store,
   });
   breakReminder.start();
 
@@ -357,6 +361,19 @@ function startBreakReminder() {
   // the whole break already elapsed while the machine was off.
   const savedLock = store.readLockState();
   if (savedLock) breakReminder.resumeLock(savedLock);
+}
+
+function startTimeBudget() {
+  timeBudget = new TimeBudget({
+    isDev,
+    logger: log,
+    getSettings: () => store.getSettings(),
+    store,
+    showLock: (state) => showLock(state),
+    updateLock: (state) => updateLock(state),
+    hideLock: () => hideLock(),
+    notify: (title, body) => { try { new Notification({ title, body }).show(); } catch (e) { /* headless */ } },
+  });
 }
 
 function telegramEnabled() {
@@ -476,7 +493,8 @@ function showLock(state) {
 
   // Refuse to close while a lock is actually in force.
   lockWin.on('close', (e) => {
-    if (breakReminder && breakReminder.getStatus().isLocked) e.preventDefault();
+    const stillLocked = (breakReminder && breakReminder.getStatus().isLocked) || (timeBudget && timeBudget.isLocked());
+    if (stillLocked) e.preventDefault();
   });
 
   // Swallow modifier-driven escapes inside the window itself.
@@ -522,6 +540,7 @@ function startTracker() {
     getBrowserState: () => browserBridge.getState(),
     onTick: (payload) => {
       if (forest && payload && payload.currentApp) forest.onForegroundApp(payload.currentApp);
+      if (timeBudget) timeBudget.check();
       if (win && !win.isDestroyed()) win.webContents.send('tick', payload);
     }
   });
@@ -710,14 +729,28 @@ function setupIpc() {
     return telegram.sendToAll('✅ Screen Time test message — you are set up to receive alerts.');
   });
 
-  ipcMain.handle('lock:getState', () => breakReminder ? breakReminder.getLockState() : { locked: false });
+  ipcMain.handle('lock:getState', () => {
+    if (breakReminder && breakReminder.getStatus().isLocked) return breakReminder.getLockState();
+    if (timeBudget && timeBudget.isLocked()) return timeBudget.getLockState();
+    return { locked: false };
+  });
   ipcMain.handle('lock:approve', (_e, reason) => breakReminder ? breakReminder.approveFromLock(reason) : { locked: false });
-  ipcMain.handle('lock:release', () => breakReminder ? breakReminder.release() : { locked: false });
+  ipcMain.handle('lock:release', () => {
+    if (breakReminder && breakReminder.getStatus().isLocked) return breakReminder.release();
+    if (timeBudget && timeBudget.isLocked()) return timeBudget.release();
+    return { locked: false };
+  });
+  ipcMain.handle('lock:logHabitForTime', (_e, habitId) => {
+    if (breakReminder && breakReminder.getStatus().isLocked) return breakReminder.logHabitForTime(habitId);
+    if (timeBudget && timeBudget.isLocked()) return timeBudget.logHabitAndCheck(habitId);
+    return { locked: false };
+  });
 
   ipcMain.handle('goals:get', () => store.getGoals());
   ipcMain.handle('goals:set', (_e, appName, targetSec) => store.setGoal(appName, targetSec));
   ipcMain.handle('limit:getGlobal', () => store.getGlobalLimit());
   ipcMain.handle('limit:setGlobal', (_e, seconds) => store.setGlobalLimit(seconds));
+  ipcMain.handle('timeBudget:getStatus', () => store.getTimeBudgetStatus());
   ipcMain.handle('streaks:get', () => store.getStreaks());
   ipcMain.handle('weekly:get', () => store.weeklyReport());
   ipcMain.handle('tracking:set', (_e, on) => { setTracking(on); return store.getSettings().tracking; });

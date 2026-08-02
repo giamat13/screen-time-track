@@ -42,7 +42,7 @@ function defaults() {
     globalLimit: 0, // total daily screen-time cap across all apps (seconds); 0 = off
     goalsSnapshots: [], // [{ effectiveDate: 'YYYY-MM-DD', goals: {...}, globalLimit: N }]
     reminders: [], // [{ id, time: 'HH:MM', message, enabled }]
-    habits: [], // [{ id, name, emoji, color, freqType: 'daily'|'weekly', target, createdAt, log: { 'YYYY-MM-DD': count } }]
+    habits: [], // [{ id, name, emoji, color, freqType: 'daily'|'weekly', target, timeReward, createdAt, entries: [{ ts, amount }] }]
     otherUsers: [], // [{ id, name, startedAt, endedAt }] — sessions logged while "Not Me" was on
     streaks: { current: 0, best: 0, lastCheckedDate: null, metDays: {}, freezers: 5, frozenDays: {} },
     forest: {
@@ -110,7 +110,12 @@ function defaults() {
           introSent: false,         // whether the first-time explanation was delivered
           knownUsers: {},           // learned @username(lowercase) -> chat id, from /start etc.
         },
-      }
+      },
+      timeBudget: {
+        enabled: false,     // when on, exceeding the budget locks the machine (see timeBudget.js)
+        startMinutes: 60,   // daily screen-time allowance before the lock kicks in; habits with
+                             // a timeReward top this up for the day (see getTimeBudgetEarnedSecondsToday)
+      },
     }
   };
 }
@@ -778,6 +783,26 @@ function setGoal(appName, targetSeconds) {
   return data.goals;
 }
 
+function getTodayPlaySeconds() {
+  const day = data.days[dateKey()];
+  if (!day) return 0;
+  return Math.max(0, (day.total || 0) - (day.study || 0));
+}
+
+function getTimeBudgetStatus() {
+  const cfg = (data.settings && data.settings.timeBudget) || { enabled: false, startMinutes: 60 };
+  const startSeconds = Math.max(0, Math.round((cfg.startMinutes || 0) * 60));
+  const earnedSeconds = getTimeBudgetEarnedSecondsToday();
+  return {
+    enabled: !!cfg.enabled,
+    startMinutes: cfg.startMinutes || 0,
+    startSeconds,
+    earnedSeconds,
+    budgetSeconds: startSeconds + earnedSeconds,
+    usedSeconds: getTodayPlaySeconds(),
+  };
+}
+
 function checkGoalsMet(key) {
   const { goals, globalLimit } = getGoalsForDate(key);
   if (Object.keys(goals).length === 0 && !globalLimit) return null; // nothing to enforce
@@ -962,6 +987,26 @@ function habitPausedSet(h) {
   return new Set(Array.isArray(h.pausedPeriods) ? h.pausedPeriods : []);
 }
 
+// Set of paused period keys, expanded to include an indefinite ("forever")
+// pause from its start period through today/this-week — bounded to "now" on
+// purpose, so this stays cheap instead of pre-generating years of future keys.
+function effectivePausedSet(h) {
+  const set = habitPausedSet(h);
+  if (h.pausedForever && h.pausedForeverSince) {
+    const weekly = h.freqType === 'weekly';
+    const step = weekly ? 7 : 1;
+    let d = new Date(h.pausedForeverSince + 'T00:00:00');
+    const now = new Date();
+    let guard = 0;
+    while (d <= now && guard < 3660) {
+      set.add(dateKey(d));
+      d.setDate(d.getDate() + step);
+      guard++;
+    }
+  }
+  return set;
+}
+
 function currentPeriodKey(weekly) {
   return weekly ? dateKey(weekStart()) : dateKey();
 }
@@ -1103,7 +1148,7 @@ function enrichHabit(h) {
   let totalDone = 0;
   for (const v of Object.values(map)) totalDone += v;
 
-  const pausedSet = habitPausedSet(h);
+  const pausedSet = effectivePausedSet(h);
   const paused = pausedSet.has(currentPeriodKey(weekly));
 
   // How much of the current pause is still ahead, so the UI can say "paused for N"
@@ -1170,6 +1215,7 @@ function enrichHabit(h) {
     unit,
     customUnit: h.customUnit,
     target,
+    timeReward: h.timeReward || 0,
     trackOnly,
     createdAt: h.createdAt,
     todayCount: map[today] || 0,
@@ -1181,6 +1227,7 @@ function enrichHabit(h) {
     freezers,
     frozenPeriods,
     paused,
+    pausedForever: !!h.pausedForever,
     pausedPeriodsLeft,
     totalDone,
     entryCount: entries.length,
@@ -1210,6 +1257,7 @@ function addHabit(h) {
     unit,
     customUnit: unit === 'custom' ? (String(h.customUnit || '').trim().slice(0, 20) || 'units') : undefined,
     target: clampTarget(unit, h.target),
+    timeReward: Math.max(0, parseInt(h.timeReward, 10) || 0),
     createdAt: new Date().toISOString(),
     entries: []
   };
@@ -1229,6 +1277,7 @@ function updateHabit(id, partial) {
   if (partial.unit != null) h.unit = partial.unit === 'minutes' ? 'minutes' : partial.unit === 'custom' ? 'custom' : 'count';
   if (partial.customUnit != null) h.customUnit = String(partial.customUnit).trim().slice(0, 20) || 'units';
   if (partial.target != null) h.target = clampTarget(habitUnit(h), partial.target);
+  if (partial.timeReward != null) h.timeReward = Math.max(0, parseInt(partial.timeReward, 10) || 0);
   flush();
   return enrichHabit(h);
 }
@@ -1259,10 +1308,16 @@ function toggleHabitPause(id, periods = 1) {
   const weekly = h.freqType === 'weekly';
   const key = currentPeriodKey(weekly);
 
-  if (h.pausedPeriods.includes(key)) {
-    // Resuming: drop the current period and everything still ahead of it, so one
-    // click cancels the rest of a multi-day pause. Past periods stay as they were.
+  if (h.pausedForever || h.pausedPeriods.includes(key)) {
+    // Resuming (from either an indefinite pause or a dated one): clear the
+    // forever flag and drop the current period and everything still ahead of
+    // it, so one click cancels the rest of a multi-day pause too.
+    h.pausedForever = false;
+    h.pausedForeverSince = undefined;
     h.pausedPeriods = h.pausedPeriods.filter((k) => k < key);
+  } else if (periods === 'forever') {
+    h.pausedForever = true;
+    h.pausedForeverSince = key; // period this indefinite pause started from
   } else {
     const n = Math.min(Math.max(Math.round(Number(periods)) || 1, 1), 365);
     const start = weekly ? weekStart() : new Date();
@@ -1310,6 +1365,22 @@ function logHabit(id, amount = 1, when = null) {
   return enrichHabit(h);
 }
 
+// Sum of timeReward minutes across every positive habit-log entry made today,
+// for habits that have a reward configured. Feeds the time-budget lock (see
+// timeBudget.js) — every logged completion tops up today's screen-time allowance.
+function getTimeBudgetEarnedSecondsToday() {
+  const today = dateKey();
+  let sec = 0;
+  for (const h of (data.habits || [])) {
+    const reward = Math.max(0, Number(h.timeReward) || 0);
+    if (!reward) continue;
+    for (const en of habitEntries(h)) {
+      if (en.amount > 0 && dateKey(new Date(en.ts)) === today) sec += reward * 60;
+    }
+  }
+  return sec;
+}
+
 // ---- main-streak unification ----
 // Daily habits are strict: a past day fails if any daily habit that existed then was
 // not fully met. Weekly habits are judged once, on the Saturday that closes their week.
@@ -1327,7 +1398,7 @@ function dailyHabitsState(key) {
     const created = h.createdAt ? dateKey(new Date(h.createdAt)) : key;
     if (key < created && !(map[key] > 0)) continue; // didn't exist yet and nothing logged
     if (clampTarget(habitUnit(h), h.target) === 0) continue; // track-only habit never blocks streak
-    if (habitPausedSet(h).has(key)) continue; // paused that day — doesn't obligate the main streak either
+    if (effectivePausedSet(h).has(key)) continue; // paused that day — doesn't obligate the main streak either
     any = true;
     if ((map[key] || 0) < clampTarget(habitUnit(h), h.target)) allMet = false;
   }
@@ -1349,7 +1420,7 @@ function weeklyHabitsState(key) {
     const sum = weekSumMap(dayMapOf(h), ws);
     if (wsKey < created && !(sum > 0)) continue; // habit didn't exist that week, nothing logged
     if (clampTarget(habitUnit(h), h.target) === 0) continue; // track-only habit never blocks streak
-    if (habitPausedSet(h).has(wsKey)) continue; // paused that week — doesn't obligate the main streak either
+    if (effectivePausedSet(h).has(wsKey)) continue; // paused that week — doesn't obligate the main streak either
     any = true;
     if (sum < clampTarget(habitUnit(h), h.target)) return false;
   }
@@ -1386,6 +1457,9 @@ function setSettings(partial) {
         {}, data.settings.breakReminder.telegram, partial.breakReminder.telegram
       );
     }
+  }
+  if (partial.timeBudget) {
+    next.timeBudget = Object.assign({}, data.settings.timeBudget, partial.timeBudget);
   }
   // Log which keys actually moved, with the token redacted — settings changes are a
   // prime suspect whenever behaviour changes "for no reason".
@@ -1565,6 +1639,8 @@ module.exports = {
   setGoal,
   getGlobalLimit,
   setGlobalLimit,
+  getTimeBudgetStatus,
+  getTodayPlaySeconds,
   getStreaks,
   weeklyReport,
   dayOfWeekStats,
