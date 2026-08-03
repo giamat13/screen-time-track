@@ -1,5 +1,5 @@
-// Daily screen-time budget lock. Start the day with a fixed allowance
-// (settings.timeBudget.startMinutes); logging a habit that has a time reward
+// Daily screen-time budget lock. Start the day with the daily limit
+// (store.globalLimit — the same one the goal streak checks); logging a habit that has a time reward
 // (habit.timeReward) tops it up for the rest of the day. Exceeding the budget
 // locks the machine via the same fullscreen kiosk window the break-reminder
 // lock uses, instead of just failing the day's streak. Driven by an external
@@ -18,6 +18,9 @@ const RELEASE_GRACE_MS = 60 * 1000;
 // notification runs first; the lock only actually engages once that elapses
 // with usage still over budget.
 const WARNING_MS = 60 * 1000;
+
+// How long the budget lock stays off after an urgent release (see urgentRelease).
+const URGENT_GRACE_MS = 30 * 60 * 1000;
 
 class TimeBudget {
   constructor({ isDev, getSettings, store, showLock, updateLock, hideLock, notify, logger }) {
@@ -96,6 +99,17 @@ class TimeBudget {
     return { locked: false };
   }
 
+  // Emergency release from the lock screen. Unlike release() this is not
+  // dev-only — the accountability is the Telegram ping main.js sends. The grace
+  // has to be long enough to actually do the urgent thing, or the lock is back
+  // a tracker tick later and the button was a lie.
+  urgentRelease() {
+    this._releasedUntil = Date.now() + URGENT_GRACE_MS;
+    this._log.warn('timeBudget.urgent_release', { graceMinutes: URGENT_GRACE_MS / 60000 });
+    this._unlock();
+    return { locked: false };
+  }
+
   getLockState() {
     if (!this._locked) return { locked: false };
     return this._state(this._store.getTimeBudgetStatus());
@@ -103,9 +117,9 @@ class TimeBudget {
 
   // Lock-screen "I did a habit" action: log it, then re-check — if the top-up
   // brings usage back under budget this unlocks immediately.
-  logHabitAndCheck(habitId) {
+  logHabitAndCheck(habitId, amount = 1) {
     if (!this._locked) return this.getLockState();
-    this._store.logHabit(habitId, 1);
+    this._store.logHabit(habitId, this._store.clampLogAmount(amount));
     this.check();
     return this.getLockState();
   }
@@ -119,7 +133,7 @@ class TimeBudget {
   _state(status) {
     const habits = (this._store.getHabits() || [])
       .filter((h) => (h.timeReward || 0) > 0)
-      .map((h) => ({ id: h.id, name: h.name, emoji: h.emoji, timeReward: h.timeReward }));
+      .map((h) => ({ id: h.id, name: h.name, emoji: h.emoji, timeReward: h.timeReward, unit: h.unit, customUnit: h.customUnit }));
     return {
       locked: true,
       mode: 'budget',

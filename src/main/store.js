@@ -113,9 +113,9 @@ function defaults() {
         },
       },
       timeBudget: {
-        enabled: false,     // when on, exceeding the budget locks the machine (see timeBudget.js)
-        startMinutes: 60,   // daily screen-time allowance before the lock kicks in; habits with
-                             // a timeReward top this up for the day (see getTimeBudgetEarnedSecondsToday)
+        enabled: false,     // when on, passing the daily limit locks the machine (see timeBudget.js).
+                             // The allowance itself is `globalLimit` — one limit for the goal streak
+                             // and the lock — topped up by habits with a timeReward that day.
         rollover: true,     // on by default whenever the feature is on: yesterday's unused
                              // allowance (if any) is added to today's budget (see getRolloverSecondsFromYesterday)
       },
@@ -264,6 +264,14 @@ function load() {
       data.days = parsed.days || {};
       data.goals = parsed.goals || {};
       data.globalLimit = parsed.globalLimit || 0;
+      // The lock's old private allowance is gone: the daily limit is now one
+      // number for both systems. Anyone who only ever set the lock's slider
+      // keeps their value by seeding the shared limit from it, once.
+      const legacyBudgetMinutes = ((parsed.settings || {}).timeBudget || {}).startMinutes || 0;
+      if (!data.globalLimit && legacyBudgetMinutes > 0) {
+        data.globalLimit = Math.round(legacyBudgetMinutes * 60);
+        log.info('store.migrate.budget_to_global_limit', { minutes: legacyBudgetMinutes });
+      }
       data.goalsSnapshots = parsed.goalsSnapshots || [];
       // Migrate: if no snapshots exist yet, seed one from the current goals.
       // Use today as the effectiveDate so past days without goals aren't counted.
@@ -808,10 +816,8 @@ function prevKey(key) {
 // day record means no leftover, rather than assuming a fresh install's silent
 // "day" was entirely unused.
 function unusedBudgetOn(key) {
-  const cfg = (data.settings && data.settings.timeBudget) || {};
   if (!data.days[key]) return 0;
-  const start = Math.max(0, Math.round((cfg.startMinutes || 0) * 60));
-  return Math.max(0, start + getTimeBudgetEarnedSecondsForDay(key) - getPlaySecondsForDay(key));
+  return Math.max(0, dailyLimitSeconds() + getTimeBudgetEarnedSecondsForDay(key) - getPlaySecondsForDay(key));
 }
 
 // Yesterday's unused allowance, if rollover is on. Frozen into data.budgetRollover
@@ -827,14 +833,23 @@ function getRolloverSecondsFromYesterday() {
   return unusedBudgetOn(prevKey(today));
 }
 
+// One daily limit for both systems: the goal streak checks it (checkGoalsMet)
+// and the lock enforces it. `globalLimit` is the source of truth; the budget's
+// legacy startMinutes only survives as a migration seed (see load()).
+function dailyLimitSeconds() {
+  return Math.max(0, Math.round(data.globalLimit || 0));
+}
+
 function getTimeBudgetStatus() {
-  const cfg = (data.settings && data.settings.timeBudget) || { enabled: false, startMinutes: 60, rollover: true };
-  const startSeconds = Math.max(0, Math.round((cfg.startMinutes || 0) * 60));
+  const cfg = (data.settings && data.settings.timeBudget) || { enabled: false, rollover: true };
+  const startSeconds = dailyLimitSeconds();
   const earnedSeconds = getTimeBudgetEarnedSecondsToday();
   const rolloverSeconds = getRolloverSecondsFromYesterday();
   return {
-    enabled: !!cfg.enabled,
-    startMinutes: cfg.startMinutes || 0,
+    // No limit means nothing to enforce: a 0-second allowance would lock the
+    // machine the instant tracking starts, with no way to earn out of it.
+    enabled: !!cfg.enabled && startSeconds > 0,
+    startMinutes: Math.round(startSeconds / 60),
     rollover: cfg.rollover !== false,
     startSeconds,
     earnedSeconds,
@@ -1411,6 +1426,15 @@ function logHabit(id, amount = 1, when = null) {
   return enrichHabit(h);
 }
 
+// Amounts typed on the lock screen buy time out of a lock, so they don't get to
+// be arbitrary: positive, 2 decimals, and capped. Anything unusable falls back
+// to a single unit rather than failing the log.
+function clampLogAmount(v, fallback = 1) {
+  const n = Number(v);
+  if (!isFinite(n) || n <= 0) return fallback;
+  return Math.min(1000, Math.round(n * 100) / 100);
+}
+
 // How many screen-time minutes a single log entry of `amount` earns for habit
 // `h`. Flat "per 1" scaling for every habit type: count/custom earns
 // timeReward per unit logged, minutes habits earn timeReward per minute logged.
@@ -1699,6 +1723,7 @@ module.exports = {
   getTimeBudgetStatus,
   getTodayPlaySeconds,
   timeRewardMinutesFor,
+  clampLogAmount,
   getStreaks,
   weeklyReport,
   dayOfWeekStats,

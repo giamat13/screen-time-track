@@ -21,7 +21,10 @@ const yesterday = new Date();
 yesterday.setDate(yesterday.getDate() - 1);
 const yKey = store.dateKey(yesterday);
 
-store.setSettings({ timeBudget: { enabled: true, startMinutes: 60, rollover: true } });
+// One daily limit drives both the goal streak and the lock.
+store.setSettings({ timeBudget: { enabled: true, rollover: true } });
+store.setGlobalLimit(60 * 60);
+assert.strictEqual(store.getTimeBudgetStatus().startSeconds, 60 * 60, 'the lock uses the daily limit');
 
 // Yesterday: 60m allowance, 20m used → 40m left over.
 store.raw().days[yKey] = {
@@ -34,7 +37,7 @@ assert.strictEqual(store.getTimeBudgetStatus().rolloverSeconds, 40 * 60, '40m ca
 assert.strictEqual(store.raw().budgetRollover.forDate, store.dateKey(), 'frozen for today');
 
 // Lowering today's limit must not retroactively shrink yesterday's leftover.
-store.setSettings({ timeBudget: { enabled: true, startMinutes: 10, rollover: true } });
+store.setGlobalLimit(10 * 60);
 let s = store.getTimeBudgetStatus();
 assert.strictEqual(s.startSeconds, 10 * 60, 'the limit follows the setting');
 assert.strictEqual(s.rolloverSeconds, 40 * 60, 'carry-over stays frozen');
@@ -46,7 +49,11 @@ store.load();
 assert.strictEqual(store.getTimeBudgetStatus().rolloverSeconds, 40 * 60, 'carry-over reloaded from disk');
 
 // Turning rollover off drops it immediately.
-store.setSettings({ timeBudget: { enabled: true, startMinutes: 10, rollover: false } });
+store.setSettings({ timeBudget: { enabled: true, rollover: false } });
 assert.strictEqual(store.getTimeBudgetStatus().rolloverSeconds, 0, 'no carry-over when rollover is off');
+
+// No daily limit means nothing to enforce — the lock cannot arm on a 0 allowance.
+store.setGlobalLimit(0);
+assert.strictEqual(store.getTimeBudgetStatus().enabled, false, 'lock stays off without a daily limit');
 
 console.log('budget-rollover: OK');

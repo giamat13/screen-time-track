@@ -201,6 +201,17 @@ class BreakReminder {
     return { locked: false };
   }
 
+  // Emergency release available to anyone, in any build — the check on it is
+  // social, not technical: main.js tells the watchers it happened and why.
+  // _unlock() clears the persisted lock, so it stays gone across a restart.
+  urgentRelease() {
+    if (this._mode !== 'locked') return { locked: false };
+    this._log.warn('breakReminder.urgent_release', { lockMode: this._lockMode });
+    this._unlock();
+    this._escalationArmed = false;
+    return { locked: false };
+  }
+
   getLockState() {
     if (this._mode !== 'locked') return { locked: false };
     const s = this._brk();
@@ -225,7 +236,7 @@ class BreakReminder {
     if (!this._store) return [];
     return (this._store.getHabits() || [])
       .filter((h) => (h.timeReward || 0) > 0)
-      .map((h) => ({ id: h.id, name: h.name, emoji: h.emoji, timeReward: h.timeReward }));
+      .map((h) => ({ id: h.id, name: h.name, emoji: h.emoji, timeReward: h.timeReward, unit: h.unit, customUnit: h.customUnit }));
   }
 
   // Lock-screen "I did a habit" action during a break lock: logs it, then shaves
@@ -233,12 +244,13 @@ class BreakReminder {
   // time-budget lock offers, applied to a fixed-duration break instead of a
   // usage budget. Enough reward habits can end the break early; overshooting
   // just unlocks immediately rather than going negative.
-  logHabitForTime(habitId) {
+  logHabitForTime(habitId, amount = 1) {
     if (this._mode !== 'locked' || !this._store) return this.getLockState();
     const h = (this._store.getHabits() || []).find((x) => x.id === habitId);
     if (!h) return this.getLockState();
-    this._store.logHabit(habitId, 1);
-    const rewardMinutes = this._store.timeRewardMinutesFor(h, 1);
+    const logged = this._store.clampLogAmount(amount);
+    this._store.logHabit(habitId, logged);
+    const rewardMinutes = this._store.timeRewardMinutesFor(h, logged);
     const rewardMs = Math.max(0, rewardMinutes) * 60 * 1000;
     if (rewardMs > 0 && this._lockUntilAt) {
       this._lockUntilAt = Math.max(Date.now(), this._lockUntilAt - rewardMs);

@@ -6,6 +6,8 @@ const el = (id) => document.getElementById(id);
 let totalMs = 0;
 let lastState = null;
 let reasonOpen = false; // "why do you need more time" panel, shown before an approve ping goes out
+let urgentOpen = false; // emergency-release panel
+let habitSig = null;    // what the habit rows were last built from
 
 function fmt(ms) {
   const s = Math.max(0, Math.ceil(ms / 1000));
@@ -19,6 +21,12 @@ function fmt(ms) {
 // timeReward configured). Logs the habit and re-renders with the result: the
 // budget lock unlocks once usage is back under budget, a break lock instead
 // shaves the habit's timeReward minutes off the remaining countdown.
+function unitLabel(h) {
+  if (h.unit === 'minutes') return 'דק\'';
+  if (h.unit === 'custom' && h.customUnit) return h.customUnit;
+  return 'פעמים';
+}
+
 function renderHabitPicker(state) {
   const panel = el('budget-habits-panel');
   const list = el('budget-habit-list');
@@ -28,6 +36,11 @@ function renderHabitPicker(state) {
     return;
   }
   panel.classList.remove('hidden');
+  // The break lock re-renders every second — rebuilding the rows would wipe an
+  // amount the user is in the middle of typing, so only rebuild on real change.
+  const sig = state.mode + '|' + habits.map((h) => `${h.id}:${h.timeReward}`).join(',');
+  if (sig === habitSig) return;
+  habitSig = sig;
   // Same picker, opposite meaning: on the budget lock a habit buys more screen
   // time, on a break lock it shortens the break. Saying "adds time" on a break
   // screen is the budget wording bleeding into the wrong lock.
@@ -37,18 +50,43 @@ function renderHabitPicker(state) {
     : 'סימנת שהשלמת אחת מההרגלים האלה עכשיו? זה מקצר את ההפסקה:';
   list.innerHTML = '';
   for (const h of habits) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; gap:8px; align-items:center; width:340px;';
+
+    // How much you actually did — the reward scales with it, so "I did 3" is
+    // worth three times "I did 1" instead of costing three clicks.
+    const amt = document.createElement('input');
+    amt.type = 'number';
+    amt.className = 'reason-input habit-amt';
+    amt.min = '0';
+    amt.step = 'any';
+    amt.value = '1';
+    amt.style.cssText = 'width:78px; padding:10px; text-align:center;';
+
+    const unit = document.createElement('span');
+    unit.textContent = unitLabel(h);
+    unit.style.cssText = 'font-size:13px; opacity:.7; min-width:48px;';
+
     const btn = document.createElement('button');
     btn.className = 'btn approve';
-    btn.style.minWidth = '340px';
-    btn.textContent = isBudget
-      ? `${h.emoji || '✅'} ${h.name} — +${h.timeReward} דק' מסך`
-      : `${h.emoji || '✅'} ${h.name} — ${h.timeReward} דק' פחות הפסקה`;
+    btn.style.cssText = 'flex:1; min-width:0;';
+    btn.textContent = `${h.emoji || '✅'} ${h.name}`;
+    btn.title = isBudget
+      ? `${h.timeReward} דק' מסך לכל יחידה`
+      : `${h.timeReward} דק' פחות הפסקה לכל יחידה`;
     btn.addEventListener('click', async () => {
+      const amount = parseFloat(String(amt.value).replace(',', '.'));
+      if (!(amount > 0)) { amt.focus(); return; }
       btn.disabled = true;
-      const st = await window.lock.logHabitForTime(h.id);
+      const st = await window.lock.logHabitForTime(h.id, amount);
+      habitSig = null; // force a rebuild so the row resets
       render(st);
     });
-    list.appendChild(btn);
+
+    row.appendChild(amt);
+    row.appendChild(unit);
+    row.appendChild(btn);
+    list.appendChild(row);
   }
 }
 
@@ -70,6 +108,7 @@ function renderBudget(state) {
   el('release').classList.toggle('hidden', !state.isDev);
 
   renderHabitPicker(state);
+  applyUrgentUI();
 }
 
 function render(state) {
@@ -126,7 +165,34 @@ function render(state) {
   }
 
   renderHabitPicker(state);
+  applyUrgentUI();
 }
+
+function applyUrgentUI() {
+  el('urgent').classList.toggle('hidden', urgentOpen);
+  el('urgent-panel').classList.toggle('hidden', !urgentOpen);
+}
+
+// Emergency valve: always available, in every lock mode. It really does unlock —
+// the accountability is that the watchers are told immediately, with the reason.
+el('urgent').addEventListener('click', () => {
+  urgentOpen = true;
+  el('urgent-reason-input').value = '';
+  render(lastState);
+  el('urgent-reason-input').focus();
+});
+el('urgent-back').addEventListener('click', () => { urgentOpen = false; render(lastState); });
+el('urgent-send').addEventListener('click', async () => {
+  const input = el('urgent-reason-input');
+  const reason = input.value.trim();
+  if (!reason) { input.reportValidity(); return; }
+  el('urgent-send').disabled = true;
+  await window.lock.urgent(reason);
+  urgentOpen = false;
+});
+el('urgent-reason-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') el('urgent-send').click();
+});
 
 // Approve requires writing why — so watchers see the reason on Telegram
 // instead of having to come ask what's going on.
@@ -165,8 +231,9 @@ el('release').addEventListener('click', async () => {
 // inside the reason input, which needs normal typing to work.
 window.addEventListener('contextmenu', (e) => e.preventDefault());
 window.addEventListener('keydown', (e) => {
-  const typingReason = e.target && e.target.id === 'approve-reason-input';
-  if (typingReason && !e.altKey && !e.metaKey && e.key !== 'Escape' && e.key !== 'Tab') return;
+  const t = e.target;
+  const typing = t && (t.id === 'approve-reason-input' || t.id === 'urgent-reason-input' || t.classList.contains('habit-amt'));
+  if (typing && !e.altKey && !e.metaKey && e.key !== 'Escape' && e.key !== 'Tab') return;
   // swallow everything else — the window is a dead end by design
   e.preventDefault();
   e.stopPropagation();

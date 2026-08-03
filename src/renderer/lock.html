@@ -53,6 +53,14 @@
         <p class="hint" id="budget-hint" style="margin-top:0;"></p>
         <div id="budget-habit-list" style="display:flex; flex-direction:column; gap:8px; width:340px;"></div>
       </div>
+      <!-- Always-available escape valve: unlocks now, and tells the watchers it happened. -->
+      <button class="btn" id="urgent" style="min-width:200px;padding:10px 20px;font-size:13px;opacity:.75;">🚨 זה דחוף — שחרר עכשיו</button>
+      <div class="hidden" id="urgent-panel" style="display:flex; flex-direction:column; gap:10px; align-items:center;">
+        <p class="hint" style="margin-top:0;">המשגיחים יקבלו הודעה מיידית שהשתחררת ולמה.</p>
+        <input type="text" class="reason-input" id="urgent-reason-input" placeholder="מה דחוף? (חובה)" maxlength="200" />
+        <button class="btn approve" id="urgent-send">שחרר ושלח למשגיחים</button>
+        <button class="btn" id="urgent-back" style="min-width:200px;padding:10px 20px;font-size:13px;">חזרה</button>
+      </div>
       <button class="btn release hidden" id="release">🔓 שחרר את המחשב</button>
     </div>
   </div>

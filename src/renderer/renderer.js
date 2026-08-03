@@ -868,25 +868,23 @@ async function renderTimeBudget() {
   const status = await api.getTimeBudgetStatus();
   $('#time-budget-on').checked = status.enabled;
   $('#time-budget-rollover').checked = status.rollover;
-  const mins = status.enabled ? status.startMinutes : 60;
-  $('#time-budget-pick').value = mins;
-  $('#time-budget-pick').disabled = !status.enabled;
-  $('#time-budget-val').textContent = `${mins}m`;
+  // The allowance is the daily limit from the card above — one number, two uses.
+  $('#time-budget-limit-lbl').textContent = status.startSeconds > 0 ? fmtShort(status.startSeconds) : 'not set';
   const bonusBits = [];
   if (status.earnedSeconds > 0) bonusBits.push(`+${Math.round(status.earnedSeconds / 60)}m from habits`);
   if (status.rolloverSeconds > 0) bonusBits.push(`+${Math.round(status.rolloverSeconds / 60)}m rolled over`);
   $('#time-budget-status').textContent = status.enabled
     ? `Today: ${fmt(status.usedSeconds)} / ${fmtShort(status.budgetSeconds)}${bonusBits.length ? ` (${bonusBits.join(', ')})` : ''}`
-    : 'Off';
+    : (status.startSeconds > 0 ? 'Off' : 'Set a daily limit above to use the lock');
 }
 
 async function saveTimeBudget() {
   const on = $('#time-budget-on').checked;
-  const mins = parseInt($('#time-budget-pick').value, 10);
   const rollover = $('#time-budget-rollover').checked;
-  await api.setSettings({ timeBudget: { enabled: on, startMinutes: mins, rollover } });
+  await api.setSettings({ timeBudget: { enabled: on, rollover } });
   await renderTimeBudget();
-  toast(on ? `Time budget: ${mins}m/day` : 'Time budget disabled');
+  const mins = Math.round(globalLimit / 60);
+  toast(on ? (globalLimit > 0 ? `Lock at ${mins}m/day` : 'Set a daily limit first') : 'Lock disabled');
 }
 
 function renderStreak(streaks) {
@@ -1038,7 +1036,8 @@ async function saveGlobalLimit() {
   const [streaks, dash] = await Promise.all([api.getStreaks(), api.getDashboard('Today')]);
   renderGlobalLimit(dash);
   renderStreak(streaks);
-  toast(on ? `Total limit: up to ${fmtShort(globalLimit)}/day` : 'Total limit removed');
+  await renderTimeBudget(); // same number drives the lock — keep that card honest
+  toast(on ? `Daily limit: up to ${fmtShort(globalLimit)}/day` : 'Daily limit removed');
 }
 
 $('#global-limit-on').addEventListener('change', () => {
@@ -1053,17 +1052,8 @@ $('#global-limit-pick').addEventListener('change', () => {
   if ($('#global-limit-on').checked) saveGlobalLimit();
 });
 
-// ---- time-budget lock (separate system — see renderTimeBudget/saveTimeBudget) ----
-$('#time-budget-on').addEventListener('change', () => {
-  $('#time-budget-pick').disabled = !$('#time-budget-on').checked;
-  saveTimeBudget();
-});
-$('#time-budget-pick').addEventListener('input', () => {
-  $('#time-budget-val').textContent = `${$('#time-budget-pick').value}m`;
-});
-$('#time-budget-pick').addEventListener('change', () => {
-  if ($('#time-budget-on').checked) saveTimeBudget();
-});
+// ---- time-budget lock: enforcement on/off for the daily limit set above ----
+$('#time-budget-on').addEventListener('change', () => saveTimeBudget());
 $('#time-budget-rollover').addEventListener('change', () => {
   if ($('#time-budget-on').checked) saveTimeBudget();
 });

@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld('lock', {
   getState: () => ipcRenderer.invoke('lock:getState'),
   approve: (reason) => ipcRenderer.invoke('lock:approve', reason),
   release: () => ipcRenderer.invoke('lock:release'),
-  logHabitForTime: (habitId) => ipcRenderer.invoke('lock:logHabitForTime', habitId),
+  logHabitForTime: (habitId, amount) => ipcRenderer.invoke('lock:logHabitForTime', habitId, amount),
+  urgent: (reason) => ipcRenderer.invoke('lock:urgent', reason),
   onTick: (cb) => ipcRenderer.on('lock:tick', (_e, d) => cb(d)),
 });

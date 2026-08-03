@@ -37,4 +37,12 @@ assert.strictEqual(store.getTimeBudgetStatus().earnedSeconds, 42 * 60, 'budget e
 store.logHabit(h.id, -0.05);
 assert.strictEqual(get(h.id).periodCount, 1, 'fractional undo');
 
+// Amounts typed on the lock screen are a trust boundary: they buy time out of a
+// lock, so garbage falls back to one unit and the value is capped.
+assert.strictEqual(store.clampLogAmount(0.25), 0.25, 'fractions pass through');
+assert.strictEqual(store.clampLogAmount('abc'), 1, 'garbage falls back to 1');
+assert.strictEqual(store.clampLogAmount(-5), 1, 'negatives fall back to 1');
+assert.strictEqual(store.clampLogAmount(0), 1, 'zero falls back to 1');
+assert.strictEqual(store.clampLogAmount(99999), 1000, 'capped');
+
 console.log('habit-fraction: OK');

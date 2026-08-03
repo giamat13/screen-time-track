@@ -778,9 +778,22 @@ function setupIpc() {
     if (timeBudget && timeBudget.isLocked()) return timeBudget.release();
     return { locked: false };
   });
-  ipcMain.handle('lock:logHabitForTime', (_e, habitId) => {
-    if (breakReminder && breakReminder.getStatus().isLocked) return breakReminder.logHabitForTime(habitId);
-    if (timeBudget && timeBudget.isLocked()) return timeBudget.logHabitAndCheck(habitId);
+  // "It's urgent" — unlocks whatever is holding the screen and tells the
+  // watchers, so the escape hatch costs social capital instead of being silent.
+  ipcMain.handle('lock:urgent', (_e, reason) => {
+    const what = breakReminder && breakReminder.getStatus().isLocked ? 'הפסקה'
+      : timeBudget && timeBudget.isLocked() ? 'נגמר זמן המסך' : 'נעילה';
+    const text = `🚨 שחרור חירום מנעילת "${what}"\nסיבה: ${String(reason || '').slice(0, 200) || '(לא נכתבה)'}`;
+    if (telegram) telegram.sendToAll(text).catch(() => {});
+    log.warn('lock.urgent_release', { what, reason: String(reason || '').slice(0, 200) });
+    if (breakReminder && breakReminder.getStatus().isLocked) breakReminder.urgentRelease();
+    if (timeBudget && timeBudget.isLocked()) timeBudget.urgentRelease();
+    return { locked: false };
+  });
+
+  ipcMain.handle('lock:logHabitForTime', (_e, habitId, amount) => {
+    if (breakReminder && breakReminder.getStatus().isLocked) return breakReminder.logHabitForTime(habitId, amount);
+    if (timeBudget && timeBudget.isLocked()) return timeBudget.logHabitAndCheck(habitId, amount);
     return { locked: false };
   });
 
