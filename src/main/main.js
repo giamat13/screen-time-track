@@ -348,9 +348,9 @@ function startBreakReminder() {
       // app, show the prompt now; otherwise it appears when they next focus it.
       presentBreakPromptIfRinging();
     },
-    showLock: (state) => showLock(state),
-    updateLock: (state) => updateLock(state),
-    hideLock: () => hideLock(),
+    showLock: (state) => showLock(state, 'break'),
+    updateLock: (state) => updateLock(state, 'break'),
+    hideLock: () => hideLock('break'),
     sendTelegram: (text) => { if (telegram) telegram.sendToAll(text); },
     notify: (title, body) => { try { new Notification({ title, body }).show(); } catch (e) { /* headless */ } },
     persistLock: (state) => store.saveLockState(state),
@@ -373,9 +373,9 @@ function startTimeBudget() {
     logger: log,
     getSettings: () => store.getSettings(),
     store,
-    showLock: (state) => showLock(state),
-    updateLock: (state) => updateLock(state),
-    hideLock: () => hideLock(),
+    showLock: (state) => showLock(state, 'budget'),
+    updateLock: (state) => updateLock(state, 'budget'),
+    hideLock: () => hideLock('budget'),
     notify: (title, body) => { try { new Notification({ title, body }).show(); } catch (e) { /* headless */ } },
   });
 }
@@ -469,9 +469,24 @@ function unregisterLockShortcuts() {
   }
 }
 
-function showLock(state) {
+// One kiosk window, two systems that can lock it: the break reminder and the
+// time budget. Without an owner they both push their own state into it, so a
+// break lock ends up rendering "screen time is up" (and vice versa). The break
+// wins — it has a real countdown that must not be hijacked mid-break — and the
+// loser keeps its own locked state, taking the window over when the break lifts.
+let lockOwner = null; // 'break' | 'budget'
+
+function ownerLockState(sys) {
+  if (sys === 'break') return breakReminder && breakReminder.getStatus().isLocked ? breakReminder.getLockState() : null;
+  if (sys === 'budget') return timeBudget && timeBudget.isLocked() ? timeBudget.getLockState() : null;
+  return null;
+}
+
+function showLock(state, sys = 'break') {
+  if (lockOwner && lockOwner !== sys && lockOwner === 'break' && ownerLockState('break')) return; // break outranks budget
   taskmgrBlock.block();
-  if (lockWin && !lockWin.isDestroyed()) { updateLock(state); return; }
+  lockOwner = sys;
+  if (lockWin && !lockWin.isDestroyed()) { updateLock(state, sys); return; }
   lockWin = new BrowserWindow({
     fullscreen: true,
     kiosk: true,
@@ -519,11 +534,27 @@ function showLock(state) {
   }, 700);
 }
 
-function updateLock(state) {
+function updateLock(state, sys = 'break') {
+  // The other system owns the screen — unless it isn't actually locked anymore,
+  // in which case a stale owner must not freeze the screen on dead state.
+  if (lockOwner && lockOwner !== sys) {
+    if (ownerLockState(lockOwner)) return;
+    lockOwner = sys;
+  }
   if (lockWin && !lockWin.isDestroyed()) lockWin.webContents.send('lock:tick', state);
 }
 
-function hideLock() {
+function hideLock(sys = null) {
+  // Only the owner can take the window down, and only if nothing else is still
+  // locked — otherwise hand the screen over to whoever is.
+  if (sys && lockOwner && lockOwner !== sys) return;
+  const other = ownerLockState(sys === 'break' ? 'budget' : 'break');
+  if (sys && other) {
+    lockOwner = sys === 'break' ? 'budget' : 'break';
+    updateLock(other, lockOwner);
+    return;
+  }
+  lockOwner = null;
   taskmgrBlock.unblock();
   unregisterLockShortcuts();
   if (lockRefocus) { clearInterval(lockRefocus); lockRefocus = null; }

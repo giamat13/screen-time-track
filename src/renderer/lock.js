@@ -28,13 +28,21 @@ function renderHabitPicker(state) {
     return;
   }
   panel.classList.remove('hidden');
-  el('budget-hint').textContent = 'סימנת שהשלמת אחת מההרגלים האלה עכשיו? זה מוסיף זמן:';
+  // Same picker, opposite meaning: on the budget lock a habit buys more screen
+  // time, on a break lock it shortens the break. Saying "adds time" on a break
+  // screen is the budget wording bleeding into the wrong lock.
+  const isBudget = state.mode === 'budget';
+  el('budget-hint').textContent = isBudget
+    ? 'סימנת שהשלמת אחת מההרגלים האלה עכשיו? זה מוסיף זמן מסך:'
+    : 'סימנת שהשלמת אחת מההרגלים האלה עכשיו? זה מקצר את ההפסקה:';
   list.innerHTML = '';
   for (const h of habits) {
     const btn = document.createElement('button');
     btn.className = 'btn approve';
     btn.style.minWidth = '340px';
-    btn.textContent = `${h.emoji || '✅'} ${h.name} — +${h.timeReward} דק'`;
+    btn.textContent = isBudget
+      ? `${h.emoji || '✅'} ${h.name} — +${h.timeReward} דק' מסך`
+      : `${h.emoji || '✅'} ${h.name} — ${h.timeReward} דק' פחות הפסקה`;
     btn.addEventListener('click', async () => {
       btn.disabled = true;
       const st = await window.lock.logHabitForTime(h.id);
@@ -50,8 +58,11 @@ function renderBudget(state) {
   el('emoji').textContent = '⏳';
   el('title').textContent = 'נגמר זמן המסך';
   el('sub').textContent = 'עברת את תקציב הזמן היומי. השלימו הרגל כדי לקבל עוד זמן, או המתינו למחר.';
+  // No countdown here — nothing is ticking down — so the break screen's
+  // "time remaining" label and progress bar must not come along for the ride.
   el('count').textContent = fmt(state.overSeconds * 1000);
-  el('bar').style.width = '100%';
+  el('count-lbl').textContent = 'מעל התקציב';
+  el('bar-wrap').classList.add('hidden');
 
   el('approve').classList.add('hidden');
   el('approve-hint').classList.add('hidden');
@@ -63,6 +74,9 @@ function renderBudget(state) {
 
 function render(state) {
   if (!state || !state.locked) return;
+  // A mode handover reuses the same window; the previous lock's total would
+  // otherwise keep scaling the progress bar.
+  if (lastState && lastState.mode !== state.mode) totalMs = 0;
   lastState = state;
 
   if (state.mode === 'budget') {
@@ -80,6 +94,8 @@ function render(state) {
   el('release').classList.toggle('hidden', !state.isDev);
 
   el('count').textContent = fmt(state.remainingMs);
+  el('count-lbl').textContent = 'זמן שנותר';
+  el('bar-wrap').classList.remove('hidden');
   if (state.totalMs && state.totalMs > totalMs) totalMs = state.totalMs;
   const pct = totalMs > 0 ? Math.max(0, Math.min(100, (state.remainingMs / totalMs) * 100)) : 0;
   el('bar').style.width = pct + '%';

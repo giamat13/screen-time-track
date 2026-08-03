@@ -1119,7 +1119,10 @@ function weeklyStreakMap(map, target) {
 // Returns { streak, freezers, frozenPeriods } where frozenPeriods is an array of
 // date strings (YYYY-MM-DD) that were saved by a freeze.
 // Walks the full history forward so earnings and spends stay consistent.
-function calcHabitStreak(map, createdAt, target, weekly, pausedSet = new Set(), bonusFreezers = 0) {
+// `overachieve`: a period where you did at least twice the target earns an extra
+// freezer. Off for track-only habits, whose target is a stand-in 1 — every
+// second log would mint a freezer and the whole mechanic would be free.
+function calcHabitStreak(map, createdAt, target, weekly, pausedSet = new Set(), bonusFreezers = 0, overachieve = false) {
   const today = dateKey();
   const created = createdAt ? dateKey(new Date(createdAt)) : today;
 
@@ -1150,14 +1153,14 @@ function calcHabitStreak(map, createdAt, target, weekly, pausedSet = new Set(), 
 
     if (pausedSet.has(p.key)) continue; // paused period — a day/week off, neutral for the streak
 
-    const met = weekly
-      ? weekSumMap(map, p.ws) >= target
-      : (map[p.key] || 0) >= target;
+    const amount = weekly ? weekSumMap(map, p.ws) : (map[p.key] || 0);
+    const met = amount >= target;
 
     if (met) {
       streak++;
       metRun++;
       if (metRun > 0 && metRun % HABIT_FREEZER_EVERY === 0) freezers++;
+      if (overachieve && target > 0 && amount >= target * 2) freezers++; // did double — bank a freeze
     } else if (isToday) {
       // current period still in progress — don't penalise
     } else {
@@ -1207,7 +1210,7 @@ function enrichHabit(h) {
   }
 
   let periodCount, best;
-  const { streak, freezers, frozenPeriods } = calcHabitStreak(map, h.createdAt, effectiveTarget, weekly, pausedSet, h.freezerBonus || 0);
+  const { streak, freezers, frozenPeriods } = calcHabitStreak(map, h.createdAt, effectiveTarget, weekly, pausedSet, h.freezerBonus || 0, !trackOnly);
   if (weekly) {
     periodCount = weekSumMap(map, weekStart());
     const metWeeks = [];

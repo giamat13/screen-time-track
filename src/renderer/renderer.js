@@ -1278,7 +1278,7 @@ function habitCard(h) {
           <span class="freq-tag">${freqLabel(h)}</span>
           <span class="${streakCls}"><span class="fl">🔥</span> ${h.streak} ${periodWord} streak</span>
           <span class="subtle small">· best ${h.bestStreak}</span>
-          <span class="freeze-tag${h.freezers === 0 ? ' empty' : ''}" title="${h.freezers} freeze ${h.freqType === 'weekly' ? 'week' : 'day'}${h.freezers !== 1 ? 's' : ''} available">🧊 ${h.freezers}</span>
+          <span class="freeze-tag${h.freezers === 0 ? ' empty' : ''}" title="${h.freezers} freeze ${h.freqType === 'weekly' ? 'week' : 'day'}${h.freezers !== 1 ? 's' : ''} available — hit double your target in one ${h.freqType === 'weekly' ? 'week' : 'day'} to earn another">🧊 ${h.freezers}</span>
           ${h.timeReward > 0 ? `<span class="reward-tag" title="Logging this adds ${h.timeReward} min of screen time when the time-budget lock is on">⏱ +${h.timeReward}m</span>` : ''}
           ${h.paused ? `<span class="paused-tag" title="Paused — won't count against your streak">⏸ ${h.pausedForever ? 'paused indefinitely' : `paused${h.pausedPeriodsLeft > 1 ? ` · ${h.pausedPeriodsLeft} ${pausePeriodWord}s left` : ''}`}</span>` : ''}
           ${peak}
