@@ -520,6 +520,38 @@
             </div>
           </div>
         </div>
+
+        <div class="card" id="vault-card">
+          <div class="card-head">
+            <h3>&#128176; Vault</h3>
+            <span class="subtle small">Unused time is swept into the vault each day and grows weekly — withdraw it back whenever you want</span>
+          </div>
+          <div class="goal-row" id="vault-row">
+            <div class="goal-info">
+              <div class="goal-name">Balance <span class="badge" id="vault-balance">—</span></div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <label class="switch"><input type="checkbox" id="vault-on" /><span class="slider"></span></label>
+                <span class="subtle small">Enable the vault</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <span class="subtle small">Sweep</span>
+                <input type="number" class="text-input num" id="vault-sweep-pct" min="0" max="100" step="1" style="max-width:80px" />
+                <span class="subtle small">% of unused time daily</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <span class="subtle small">Growth</span>
+                <input type="number" class="text-input num" id="vault-growth-pct" min="0" step="1" style="max-width:80px" />
+                <span class="subtle small">% weekly</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <input type="number" class="text-input num" id="vault-deposit-amt" min="1" step="1" placeholder="Minutes" style="max-width:100px" />
+                <button class="btn ghost" id="vault-deposit-btn">Move to vault</button>
+                <input type="number" class="text-input num" id="vault-withdraw-amt" min="1" step="1" placeholder="Minutes" style="max-width:100px" />
+                <button class="btn primary" id="vault-withdraw-btn">Withdraw</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- ============ HABITS ============ -->

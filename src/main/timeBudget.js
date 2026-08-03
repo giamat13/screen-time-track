@@ -130,6 +130,15 @@ class TimeBudget {
     return this.getLockState();
   }
 
+  // Lock-screen vault withdrawal — mirrors logHabitAndCheck: move seconds from
+  // the vault into today's budget, then re-check for an immediate unlock.
+  withdrawFromVaultAndCheck(seconds) {
+    if (!this._locked) return this.getLockState();
+    this._store.withdrawFromVault(seconds);
+    this.check();
+    return this.getLockState();
+  }
+
   _unlock() {
     this._locked = false;
     this._clearWarning();
@@ -148,6 +157,7 @@ class TimeBudget {
       budgetSeconds: status.budgetSeconds,
       isDev: this._isDev,
       habits,
+      vaultSeconds: this._store.getVaultStatus().seconds,
     };
   }
 }

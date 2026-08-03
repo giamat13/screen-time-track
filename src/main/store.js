@@ -42,6 +42,7 @@ function defaults() {
     globalLimit: 0, // total daily screen-time cap across all apps (seconds); 0 = off
     goalsSnapshots: [], // [{ effectiveDate: 'YYYY-MM-DD', goals: {...}, globalLimit: N }]
     budgetRollover: { forDate: null, seconds: 0 }, // yesterday's unused time budget, frozen at midnight
+    vault: { seconds: 0, lastAccrualDate: null }, // time banked long-term; grows daily, see _settleVault()
     reminders: [], // [{ id, time: 'HH:MM', message, enabled }]
     habits: [], // [{ id, name, emoji, color, freqType: 'daily'|'weekly', target, timeReward, createdAt, entries: [{ ts, amount }] }]
     otherUsers: [], // [{ id, name, startedAt, endedAt }] — sessions logged while "Not Me" was on
@@ -118,6 +119,11 @@ function defaults() {
                              // and the lock — topped up by habits with a timeReward that day.
         rollover: true,     // on by default whenever the feature is on: yesterday's unused
                              // allowance (if any) is added to today's budget (see getRolloverSecondsFromYesterday)
+      },
+      vault: {
+        enabled: true,
+        sweepPercent: 75,       // % of each day's unused budget that goes to the vault instead of rolling over
+        weeklyGrowthPercent: 10, // compounds daily to this much per 7 days, see _settleVault()
       },
     }
   };
@@ -559,23 +565,45 @@ function dateKey(d = new Date()) {
   return `${y}-${m}-${day}`;
 }
 
+function clampPercent(v, max = 100) {
+  const n = Number(v);
+  if (!isFinite(n)) return 0;
+  return Math.min(max, Math.max(0, n));
+}
+
 function ensureDay(key) {
   if (!data.days[key]) {
     const now = new Date().toISOString();
     // Freeze what yesterday left over before the new day starts, using the budget
     // settings that were actually in force then. Recomputing it later would let a
     // change to startMinutes today silently rewrite yesterday's leftover.
-    const carried = unusedBudgetOn(prevKey(key));
-    data.days[key] = { apps: {}, total: 0, firstSeen: now, lastSeen: now, hours: new Array(24).fill(0), studyApps: {}, study: 0 };
+    const unused = unusedBudgetOn(prevKey(key));
+    const vaultCfg = (data.settings && data.settings.vault) || defaults().settings.vault;
+    const sweepPct = vaultCfg.enabled !== false ? clampPercent(vaultCfg.sweepPercent) : 0;
+    const toVault = unused * (sweepPct / 100);
+    const carried = unused - toVault;
+    data.days[key] = {
+      apps: {}, total: 0, firstSeen: now, lastSeen: now, hours: new Array(24).fill(0), studyApps: {}, study: 0,
+      vaultDeposited: 0, vaultWithdrawn: 0,
+    };
     data.budgetRollover = { forDate: key, seconds: carried };
+    if (toVault > 0) {
+      _settleVault(); // apply growth up to today before adding the fresh sweep
+      data.vault.seconds += toVault;
+    }
     // Day rollover: one line a day, and the cheapest way to prove the history was
     // still intact at midnight if it is missing the morning after.
-    log.info('store.day.created', { day: key, daysNow: Object.keys(data.days).length, rolloverSeconds: Math.round(carried) });
+    log.info('store.day.created', {
+      day: key, daysNow: Object.keys(data.days).length,
+      rolloverSeconds: Math.round(carried), vaultSweptSeconds: Math.round(toVault),
+    });
   }
   // Backfill buckets for days created before those features existed.
   if (!Array.isArray(data.days[key].hours)) data.days[key].hours = new Array(24).fill(0);
   if (!data.days[key].studyApps) data.days[key].studyApps = {};
   if (typeof data.days[key].study !== 'number') data.days[key].study = 0;
+  if (typeof data.days[key].vaultDeposited !== 'number') data.days[key].vaultDeposited = 0;
+  if (typeof data.days[key].vaultWithdrawn !== 'number') data.days[key].vaultWithdrawn = 0;
   return data.days[key];
 }
 
@@ -814,10 +842,14 @@ function prevKey(key) {
 
 // How much of `key`'s allowance went unused. Requires an actual tracked day; no
 // day record means no leftover, rather than assuming a fresh install's silent
-// "day" was entirely unused.
+// "day" was entirely unused. A manual vault deposit that day already left the
+// day's usable budget, so it isn't unused; a withdrawal added to it, so it is.
 function unusedBudgetOn(key) {
-  if (!data.days[key]) return 0;
-  return Math.max(0, dailyLimitSeconds() + getTimeBudgetEarnedSecondsForDay(key) - getPlaySecondsForDay(key));
+  const day = data.days[key];
+  if (!day) return 0;
+  const vaultDeposited = day.vaultDeposited || 0;
+  const vaultWithdrawn = day.vaultWithdrawn || 0;
+  return Math.max(0, dailyLimitSeconds() + getTimeBudgetEarnedSecondsForDay(key) - getPlaySecondsForDay(key) - vaultDeposited + vaultWithdrawn);
 }
 
 // Yesterday's unused allowance, if rollover is on. Frozen into data.budgetRollover
@@ -845,6 +877,9 @@ function getTimeBudgetStatus() {
   const startSeconds = dailyLimitSeconds();
   const earnedSeconds = getTimeBudgetEarnedSecondsToday();
   const rolloverSeconds = getRolloverSecondsFromYesterday();
+  const todayRec = data.days[dateKey()];
+  const vaultDeposited = (todayRec && todayRec.vaultDeposited) || 0;
+  const vaultWithdrawn = (todayRec && todayRec.vaultWithdrawn) || 0;
   return {
     // No limit means nothing to enforce: a 0-second allowance would lock the
     // machine the instant tracking starts, with no way to earn out of it.
@@ -854,9 +889,77 @@ function getTimeBudgetStatus() {
     startSeconds,
     earnedSeconds,
     rolloverSeconds,
-    budgetSeconds: startSeconds + earnedSeconds + rolloverSeconds,
+    vaultDeposited,
+    vaultWithdrawn,
+    budgetSeconds: startSeconds + earnedSeconds + rolloverSeconds - vaultDeposited + vaultWithdrawn,
     usedSeconds: getTodayPlaySeconds(),
   };
+}
+
+// ---------------- vault (long-term time savings) ----------------
+function daysBetweenKeys(a, b) {
+  return Math.round((new Date(`${b}T12:00:00`) - new Date(`${a}T12:00:00`)) / 86400000);
+}
+
+// Lazily settle growth: (1+dailyRate)^7 == 1+weeklyGrowthPercent/100, so a
+// day's rate is the 7th root of the weekly one rather than a linear 1/7th.
+// Rate is recomputed from the *current* setting every time — a changed
+// setting applies going forward only, never retroactively.
+function _settleVault() {
+  if (!data.vault) data.vault = defaults().vault;
+  const today = dateKey();
+  if (!data.vault.lastAccrualDate) { data.vault.lastAccrualDate = today; return; }
+  const elapsed = daysBetweenKeys(data.vault.lastAccrualDate, today);
+  if (elapsed <= 0) return;
+  const cfg = (data.settings && data.settings.vault) || defaults().settings.vault;
+  const weeklyPct = Math.max(0, Number(cfg.weeklyGrowthPercent) || 0);
+  const dailyRate = Math.pow(1 + weeklyPct / 100, 1 / 7) - 1;
+  data.vault.seconds *= Math.pow(1 + dailyRate, elapsed);
+  data.vault.lastAccrualDate = today;
+  scheduleSave();
+}
+
+function getVaultStatus() {
+  _settleVault();
+  const cfg = (data.settings && data.settings.vault) || defaults().settings.vault;
+  return {
+    enabled: cfg.enabled !== false,
+    seconds: Math.round(data.vault.seconds),
+    sweepPercent: cfg.sweepPercent,
+    weeklyGrowthPercent: cfg.weeklyGrowthPercent,
+  };
+}
+
+// Moves seconds out of today's still-usable budget into the vault. Clamped to
+// what's actually left today so the same time can't also be spent today.
+function depositToVault(seconds) {
+  seconds = Math.max(0, Math.round(Number(seconds) || 0));
+  if (seconds <= 0) return getVaultStatus();
+  const status = getTimeBudgetStatus();
+  const remaining = Math.max(0, status.budgetSeconds - status.usedSeconds);
+  const amount = Math.min(seconds, remaining);
+  if (amount <= 0) return getVaultStatus();
+  _settleVault();
+  data.vault.seconds += amount;
+  const day = ensureDay(dateKey());
+  day.vaultDeposited = (day.vaultDeposited || 0) + amount;
+  flush();
+  return getVaultStatus();
+}
+
+// Moves seconds from the vault into today's usable budget. Clamped to the
+// (post-settle) vault balance.
+function withdrawFromVault(seconds) {
+  seconds = Math.max(0, Math.round(Number(seconds) || 0));
+  _settleVault();
+  if (seconds <= 0) return getVaultStatus();
+  const amount = Math.min(seconds, data.vault.seconds);
+  if (amount <= 0) return getVaultStatus();
+  data.vault.seconds -= amount;
+  const day = ensureDay(dateKey());
+  day.vaultWithdrawn = (day.vaultWithdrawn || 0) + amount;
+  flush();
+  return getVaultStatus();
 }
 
 function checkGoalsMet(key) {
@@ -1542,6 +1645,13 @@ function setSettings(partial) {
   if (partial.timeBudget) {
     next.timeBudget = Object.assign({}, data.settings.timeBudget, partial.timeBudget);
   }
+  if (partial.vault) {
+    next.vault = Object.assign({}, data.settings.vault, partial.vault);
+    if (partial.vault.sweepPercent != null) next.vault.sweepPercent = clampPercent(partial.vault.sweepPercent);
+    if (partial.vault.weeklyGrowthPercent != null) {
+      next.vault.weeklyGrowthPercent = Math.max(0, Number(partial.vault.weeklyGrowthPercent) || 0);
+    }
+  }
   // Log which keys actually moved, with the token redacted — settings changes are a
   // prime suspect whenever behaviour changes "for no reason".
   const changed = {};
@@ -1721,6 +1831,9 @@ module.exports = {
   getGlobalLimit,
   setGlobalLimit,
   getTimeBudgetStatus,
+  getVaultStatus,
+  depositToVault,
+  withdrawFromVault,
   getTodayPlaySeconds,
   timeRewardMinutesFor,
   clampLogAmount,

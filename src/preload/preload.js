@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('api', {
   getGlobalLimit: () => ipcRenderer.invoke('limit:getGlobal'),
   setGlobalLimit: (seconds) => ipcRenderer.invoke('limit:setGlobal', seconds),
   getTimeBudgetStatus: () => ipcRenderer.invoke('timeBudget:getStatus'),
+  getVaultStatus: () => ipcRenderer.invoke('vault:getStatus'),
+  depositToVault: (seconds) => ipcRenderer.invoke('vault:deposit', seconds),
+  withdrawFromVault: (seconds) => ipcRenderer.invoke('vault:withdraw', seconds),
   getStreaks: () => ipcRenderer.invoke('streaks:get'),
   getWeeklyReport: () => ipcRenderer.invoke('weekly:get'),
 
@@ -73,6 +76,7 @@ contextBridge.exposeInMainWorld('lock', {
   approve: (reason) => ipcRenderer.invoke('lock:approve', reason),
   release: () => ipcRenderer.invoke('lock:release'),
   logHabitForTime: (habitId, amount) => ipcRenderer.invoke('lock:logHabitForTime', habitId, amount),
+  vaultWithdraw: (seconds) => ipcRenderer.invoke('lock:vaultWithdraw', seconds),
   urgent: (reason) => ipcRenderer.invoke('lock:urgent', reason),
   onTick: (cb) => ipcRenderer.on('lock:tick', (_e, d) => cb(d)),
 });

@@ -788,6 +788,7 @@ async function loadGoals() {
   globalLimit = gLimit || 0;
   renderGlobalLimit(dash);
   renderTimeBudget();
+  renderVault();
   renderStreak(streaks);
   renderStreakGoals(goals, dash, gLimit);
   renderStreakHabits(habits);
@@ -1059,6 +1060,51 @@ $('#global-limit-pick').addEventListener('change', () => {
 $('#time-budget-on').addEventListener('change', () => saveTimeBudget());
 $('#time-budget-rollover').addEventListener('change', () => {
   if ($('#time-budget-on').checked) saveTimeBudget();
+});
+
+// ---- vault: sweeps unused budget into long-term savings that grow weekly ----
+async function renderVault() {
+  const status = await api.getVaultStatus();
+  $('#vault-on').checked = status.enabled;
+  $('#vault-sweep-pct').value = status.sweepPercent;
+  $('#vault-growth-pct').value = status.weeklyGrowthPercent;
+  $('#vault-balance').textContent = fmtShort(status.seconds);
+}
+
+async function saveVaultSettings() {
+  await api.setSettings({
+    vault: {
+      enabled: $('#vault-on').checked,
+      sweepPercent: parseInt($('#vault-sweep-pct').value, 10) || 0,
+      weeklyGrowthPercent: parseInt($('#vault-growth-pct').value, 10) || 0,
+    }
+  });
+  await renderVault();
+  toast('Vault settings saved');
+}
+
+$('#vault-on').addEventListener('change', saveVaultSettings);
+$('#vault-sweep-pct').addEventListener('change', saveVaultSettings);
+$('#vault-growth-pct').addEventListener('change', saveVaultSettings);
+
+$('#vault-deposit-btn').addEventListener('click', async () => {
+  const mins = parseFloat($('#vault-deposit-amt').value);
+  if (!(mins > 0)) return;
+  await api.depositToVault(Math.round(mins * 60));
+  $('#vault-deposit-amt').value = '';
+  await renderVault();
+  await renderTimeBudget();
+  toast('Moved to vault');
+});
+
+$('#vault-withdraw-btn').addEventListener('click', async () => {
+  const mins = parseFloat($('#vault-withdraw-amt').value);
+  if (!(mins > 0)) return;
+  await api.withdrawFromVault(Math.round(mins * 60));
+  $('#vault-withdraw-amt').value = '';
+  await renderVault();
+  await renderTimeBudget();
+  toast('Withdrawn from vault');
 });
 
 $('#goals-time-pick').addEventListener('input', () => {

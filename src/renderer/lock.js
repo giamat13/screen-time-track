@@ -90,6 +90,16 @@ function renderHabitPicker(state) {
   }
 }
 
+// Vault withdraw — budget-mode only, shown next to the habit picker whenever
+// there's a balance to draw on.
+function renderVaultPanel(state) {
+  const panel = el('vault-panel');
+  const vaultSeconds = state.vaultSeconds || 0;
+  if (!(vaultSeconds > 0)) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  el('vault-hint').textContent = `יש בכספת ${Math.floor(vaultSeconds / 60)} דק' — אפשר למשוך לזמן מסך:`;
+}
+
 // Time-budget lock: distinct from the break/approve-short flows above — no
 // countdown, no approve-watchers ping, just "log a reward habit to unlock".
 function renderBudget(state) {
@@ -108,6 +118,7 @@ function renderBudget(state) {
   el('release').classList.toggle('hidden', !state.isDev);
 
   renderHabitPicker(state);
+  renderVaultPanel(state);
   applyUrgentUI();
 }
 
@@ -123,6 +134,7 @@ function render(state) {
     return;
   }
 
+  el('vault-panel').classList.add('hidden'); // withdraw is a budget-lock-only affordance
   const isBreak = state.mode === 'break';
   el('emoji').textContent = isBreak ? '🔒' : '⏳';
   el('title').textContent = isBreak ? 'זמן להפסקה' : 'קום לרגע לבדוק';
@@ -225,6 +237,17 @@ el('approve-reason-input').addEventListener('keydown', (e) => {
 el('release').addEventListener('click', async () => {
   el('release').disabled = true;
   await window.lock.release();
+});
+
+el('vault-withdraw-btn').addEventListener('click', async () => {
+  const input = el('vault-withdraw-amt');
+  const mins = parseFloat(String(input.value).replace(',', '.'));
+  if (!(mins > 0)) { input.focus(); return; }
+  el('vault-withdraw-btn').disabled = true;
+  const st = await window.lock.vaultWithdraw(Math.round(mins * 60));
+  el('vault-withdraw-btn').disabled = false;
+  input.value = '';
+  render(st);
 });
 
 // Block context menu / key-based escapes at the renderer level too — except

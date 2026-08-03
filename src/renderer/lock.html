@@ -53,6 +53,13 @@
         <p class="hint" id="budget-hint" style="margin-top:0;"></p>
         <div id="budget-habit-list" style="display:flex; flex-direction:column; gap:8px; width:340px;"></div>
       </div>
+      <div class="hidden" id="vault-panel" style="display:flex; flex-direction:column; gap:10px; align-items:center;">
+        <p class="hint" id="vault-hint" style="margin-top:0;"></p>
+        <div style="display:flex; gap:8px; align-items:center; width:340px;">
+          <input type="number" class="reason-input habit-amt" id="vault-withdraw-amt" min="1" step="any" placeholder="דק'" style="width:100px; padding:10px; text-align:center;" />
+          <button class="btn approve" id="vault-withdraw-btn" style="flex:1; min-width:0;">&#128176; משוך מהכספת</button>
+        </div>
+      </div>
       <!-- Always-available escape valve: unlocks now, and tells the watchers it happened. -->
       <button class="btn" id="urgent" style="min-width:200px;padding:10px 20px;font-size:13px;opacity:.75;">🚨 זה דחוף — שחרר עכשיו</button>
       <div class="hidden" id="urgent-panel" style="display:flex; flex-direction:column; gap:10px; align-items:center;">

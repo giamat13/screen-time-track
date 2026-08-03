@@ -23,6 +23,9 @@ const yKey = store.dateKey(yesterday);
 
 // One daily limit drives both the goal streak and the lock.
 store.setSettings({ timeBudget: { enabled: true, rollover: true } });
+// This test is about rollover in isolation — the vault (which by default sweeps
+// 75% of unused time away from rollover) has its own coverage in test-vault.js.
+store.setSettings({ vault: { enabled: false } });
 store.setGlobalLimit(60 * 60);
 assert.strictEqual(store.getTimeBudgetStatus().startSeconds, 60 * 60, 'the lock uses the daily limit');
 

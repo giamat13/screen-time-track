@@ -796,12 +796,19 @@ function setupIpc() {
     if (timeBudget && timeBudget.isLocked()) return timeBudget.logHabitAndCheck(habitId, amount);
     return { locked: false };
   });
+  ipcMain.handle('lock:vaultWithdraw', (_e, seconds) => {
+    if (timeBudget && timeBudget.isLocked()) return timeBudget.withdrawFromVaultAndCheck(seconds);
+    return { locked: false };
+  });
 
   ipcMain.handle('goals:get', () => store.getGoals());
   ipcMain.handle('goals:set', (_e, appName, targetSec) => store.setGoal(appName, targetSec));
   ipcMain.handle('limit:getGlobal', () => store.getGlobalLimit());
   ipcMain.handle('limit:setGlobal', (_e, seconds) => store.setGlobalLimit(seconds));
   ipcMain.handle('timeBudget:getStatus', () => store.getTimeBudgetStatus());
+  ipcMain.handle('vault:getStatus', () => store.getVaultStatus());
+  ipcMain.handle('vault:deposit', (_e, seconds) => store.depositToVault(seconds));
+  ipcMain.handle('vault:withdraw', (_e, seconds) => store.withdrawFromVault(seconds));
   ipcMain.handle('streaks:get', () => store.getStreaks());
   ipcMain.handle('weekly:get', () => store.weeklyReport());
   ipcMain.handle('tracking:set', (_e, on) => { setTracking(on); return store.getSettings().tracking; });
