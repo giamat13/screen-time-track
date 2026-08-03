@@ -198,8 +198,13 @@ async function loadDashboard() {
   applyNavState('dashboard', dashOffset, dashRange, d);
 
   const viewing = dashOffset === 0 ? '' : ` · ${fmtRangeLabel(dashRange, dashOffset, d)}`;
-  $('#hero-label').textContent = (dashRange === 'Today' ? "Today's Screen Time" : `Screen Time (${labelFor(dashRange)})`) + viewing;
-  $('#hero-time').innerHTML = fmtLong(d.total);
+  const live = dashRange === 'Today' && dashOffset === 0 && dashFilter !== 'study';
+  const budget = live ? await api.getTimeBudgetStatus() : null;
+  const what = dashFilter === 'study' ? 'Study Time' : `Screen Time${budget ? ' (study not counted)' : ''}`;
+  $('#hero-label').textContent = (dashRange === 'Today' ? `Today's ${what}` : `${what} (${labelFor(dashRange)})`) + viewing;
+  $('#hero-time').innerHTML = fmtLong(budget ? budget.usedSeconds : d.total);
+  renderHeroBudget(budget);
+  setHeroStudy(d.studyTotal);
 
   $('#s-apps').textContent = d.appsUsed;
   $('#s-most').textContent = d.mostUsed;
@@ -227,6 +232,30 @@ async function loadDashboard() {
   applyTrackingUI(st.tracking, st.paused);
 }
 function labelFor(r) { return r === 'Today' ? 'Today' : `${r} Days`; }
+
+// "/ 2h 0m + 30m" under the hero clock: max allowance (start + rollover) and the
+// bonus earned from habits today. Hidden when the time-budget lock is off.
+function renderHeroBudget(b) {
+  const el = $('#hero-budget');
+  el.classList.toggle('hidden', !b || !b.enabled);
+  if (!b || !b.enabled) return;
+  el.classList.toggle('over', b.usedSeconds > b.budgetSeconds);
+  // Each source stays its own term: the "/" is exactly the limit you set, so
+  // changing it visibly moves the number instead of hiding inside a lump sum.
+  el.innerHTML = `/ ${fmtShort(b.startSeconds)}`
+    + ` <span class="bonus" title="Earned from habits today">+ ${fmtShort(b.earnedSeconds)} 🌱</span>`
+    + (b.rolloverSeconds > 0 ? ` <span class="roll" title="Unused time rolled over from yesterday">+ ${fmtShort(b.rolloverSeconds)} ↩</span>` : '');
+  el.title = `${fmtShort(b.budgetSeconds)} total today — ${fmtShort(Math.max(0, b.budgetSeconds - b.usedSeconds))} left`;
+}
+
+// Study time is excluded from the hero clock and the budget, so show it on its
+// own line. Hidden when there's none, or when the filter already makes the big
+// number the study total.
+function setHeroStudy(sec) {
+  const show = dashFilter !== 'study' && sec > 0;
+  $('#hero-study-line').classList.toggle('hidden', !show);
+  if (show) $('#hero-study-time').textContent = fmtShort(sec);
+}
 
 function renderDonut(dist, total) {
   const svg = $('#donut');
@@ -1221,7 +1250,6 @@ function habitCard(h) {
   const peak = (h.peakHour >= 0 && h.entryCount >= 3)
     ? `<span class="hab-peak" title="When you usually log this">🕐 usually ${pad2(h.peakHour)}:00</span>` : '';
   const defAmt = h.unit === 'minutes' ? Math.min(h.target, 30) : 1;
-  const stepAttr = h.unit === 'minutes' ? 5 : 1;
   const hlpUnit = h.unit === 'minutes' ? 'min' : h.unit === 'custom' ? customUnitLabel(h) : '×';
 
   const pausePeriodWord = h.freqType === 'weekly' ? 'week' : 'day';
@@ -1271,7 +1299,7 @@ function habitCard(h) {
     <div class="hab-log-panel hidden">
       <div class="hlp-row">
         <label class="hlp-lbl">Amount</label>
-        <input type="number" class="hlp-amt" min="1" step="${stepAttr}" value="${defAmt}" />
+        <input type="number" class="hlp-amt" min="0" step="any" value="${defAmt}" title="Decimals allowed — 0.25, 0.5, 1.5 …" />
         <span class="hlp-unit">${hlpUnit}</span>
       </div>
       <div class="hlp-row">
@@ -1316,7 +1344,7 @@ function wireLogPanel(card, h) {
   });
   card.querySelector('.hlp-cancel').addEventListener('click', () => panel.classList.add('hidden'));
   card.querySelector('.hlp-add').addEventListener('click', () => {
-    const amount = parseInt(card.querySelector('.hlp-amt').value, 10);
+    const amount = parseFloat(String(card.querySelector('.hlp-amt').value).replace(',', '.'));
     if (!amount || amount <= 0) { toast('Enter an amount', true); return; }
     const date = dateEl.value;
     if (!date) { toast('Pick a day', true); return; }
@@ -1546,7 +1574,10 @@ $('#hab-save').addEventListener('click', async () => {
 api.onTick((p) => {
   // keep the hero counter & current app fresh without a full reload
   if (!$('#page-dashboard').classList.contains('hidden') && dashRange === 'Today' && dashOffset === 0) {
-    $('#hero-time').innerHTML = fmtLong(p.todaySeconds);
+    const budget = dashFilter !== 'study' ? p.budget : null;
+    $('#hero-time').innerHTML = fmtLong(budget ? budget.usedSeconds : p.todaySeconds);
+    renderHeroBudget(budget);
+    setHeroStudy(p.studySeconds || 0);
   }
   $('#hero-current-app').textContent = p.currentApp || '—';
   $('#hero-call-badge').classList.toggle('hidden', !p.inCall);

@@ -41,6 +41,7 @@ function defaults() {
     goals: {}, // { appName: targetSeconds }
     globalLimit: 0, // total daily screen-time cap across all apps (seconds); 0 = off
     goalsSnapshots: [], // [{ effectiveDate: 'YYYY-MM-DD', goals: {...}, globalLimit: N }]
+    budgetRollover: { forDate: null, seconds: 0 }, // yesterday's unused time budget, frozen at midnight
     reminders: [], // [{ id, time: 'HH:MM', message, enabled }]
     habits: [], // [{ id, name, emoji, color, freqType: 'daily'|'weekly', target, timeReward, createdAt, entries: [{ ts, amount }] }]
     otherUsers: [], // [{ id, name, startedAt, endedAt }] — sessions logged while "Not Me" was on
@@ -553,10 +554,15 @@ function dateKey(d = new Date()) {
 function ensureDay(key) {
   if (!data.days[key]) {
     const now = new Date().toISOString();
+    // Freeze what yesterday left over before the new day starts, using the budget
+    // settings that were actually in force then. Recomputing it later would let a
+    // change to startMinutes today silently rewrite yesterday's leftover.
+    const carried = unusedBudgetOn(prevKey(key));
     data.days[key] = { apps: {}, total: 0, firstSeen: now, lastSeen: now, hours: new Array(24).fill(0), studyApps: {}, study: 0 };
+    data.budgetRollover = { forDate: key, seconds: carried };
     // Day rollover: one line a day, and the cheapest way to prove the history was
     // still intact at midnight if it is missing the morning after.
-    log.info('store.day.created', { day: key, daysNow: Object.keys(data.days).length });
+    log.info('store.day.created', { day: key, daysNow: Object.keys(data.days).length, rolloverSeconds: Math.round(carried) });
   }
   // Backfill buckets for days created before those features existed.
   if (!Array.isArray(data.days[key].hours)) data.days[key].hours = new Array(24).fill(0);
@@ -792,29 +798,40 @@ function getPlaySecondsForDay(key) {
 }
 function getTodayPlaySeconds() { return getPlaySecondsForDay(dateKey()); }
 
-// Yesterday's unused allowance, if rollover is on. There's no historical snapshot
-// of startMinutes (unlike goals), so yesterday's budget is approximated using
-// today's currently-configured startMinutes + yesterday's actual habit earnings —
-// only yesterday is ever looked at, so this can't compound across multiple days.
-// Requires an actual tracked day yesterday; no day record means no rollover,
-// rather than assuming a fresh install's silent "day" was entirely unused.
-function getRolloverSecondsFromYesterday(startSeconds) {
+function prevKey(key) {
+  const d = new Date(`${key}T12:00:00`);
+  d.setDate(d.getDate() - 1);
+  return dateKey(d);
+}
+
+// How much of `key`'s allowance went unused. Requires an actual tracked day; no
+// day record means no leftover, rather than assuming a fresh install's silent
+// "day" was entirely unused.
+function unusedBudgetOn(key) {
+  const cfg = (data.settings && data.settings.timeBudget) || {};
+  if (!data.days[key]) return 0;
+  const start = Math.max(0, Math.round((cfg.startMinutes || 0) * 60));
+  return Math.max(0, start + getTimeBudgetEarnedSecondsForDay(key) - getPlaySecondsForDay(key));
+}
+
+// Yesterday's unused allowance, if rollover is on. Frozen into data.budgetRollover
+// by ensureDay() the moment the new day is created, so it survives restarts and
+// isn't rewritten when today's startMinutes changes. The live fallback only runs
+// for a day record created before this was stored (i.e. right after upgrading).
+function getRolloverSecondsFromYesterday() {
   const cfg = (data.settings && data.settings.timeBudget) || {};
   if (cfg.rollover === false) return 0;
-  const y = new Date();
-  y.setDate(y.getDate() - 1);
-  const yKey = dateKey(y);
-  if (!data.days[yKey]) return 0;
-  const yUsed = getPlaySecondsForDay(yKey);
-  const yBudget = startSeconds + getTimeBudgetEarnedSecondsForDay(yKey);
-  return Math.max(0, yBudget - yUsed);
+  const today = dateKey();
+  const saved = data.budgetRollover;
+  if (saved && saved.forDate === today) return Math.max(0, saved.seconds || 0);
+  return unusedBudgetOn(prevKey(today));
 }
 
 function getTimeBudgetStatus() {
   const cfg = (data.settings && data.settings.timeBudget) || { enabled: false, startMinutes: 60, rollover: true };
   const startSeconds = Math.max(0, Math.round((cfg.startMinutes || 0) * 60));
   const earnedSeconds = getTimeBudgetEarnedSecondsToday();
-  const rolloverSeconds = getRolloverSecondsFromYesterday(startSeconds);
+  const rolloverSeconds = getRolloverSecondsFromYesterday();
   return {
     enabled: !!cfg.enabled,
     startMinutes: cfg.startMinutes || 0,
@@ -1056,7 +1073,9 @@ function dayMapOf(h) {
   const map = {};
   for (const en of habitEntries(h)) {
     const k = dateKey(new Date(en.ts));
-    map[k] = (map[k] || 0) + (en.amount || 0);
+    // rounded because amounts can be fractional (0.25, 0.5) — raw float sums
+    // drift just under a target and would silently fail a met-day check.
+    map[k] = Math.round(((map[k] || 0) + (en.amount || 0)) * 100) / 100;
   }
   return map;
 }
@@ -1364,7 +1383,7 @@ function logHabit(id, amount = 1, when = null) {
   const h = (data.habits || []).find((x) => x.id === id);
   if (!h) return null;
   const entries = habitEntries(h);
-  amount = Number(amount) || 0;
+  amount = Math.round((Number(amount) || 0) * 100) / 100; // fractional logs allowed (0.25, 0.5)
 
   if (amount > 0) {
     let ts;

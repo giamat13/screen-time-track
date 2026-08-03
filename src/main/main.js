@@ -328,8 +328,12 @@ function setupPowerEvents() {
 }
 
 // ---- tracker --------------------------------------------------------------
+// `locked` is the OS lock screen; lockWin is any of our own kiosk locks (break,
+// budget, approve-short) — during either, the only thing on screen is the lock,
+// so nothing may be counted (the lock window itself included).
 function isPaused() {
-  return !store.getSettings().tracking || store.getSettings().notMe || locked || suspended;
+  return !store.getSettings().tracking || store.getSettings().notMe || locked || suspended
+    || !!(lockWin && !lockWin.isDestroyed());
 }
 
 function startBreakReminder() {
@@ -541,7 +545,10 @@ function startTracker() {
     onTick: (payload) => {
       if (forest && payload && payload.currentApp) forest.onForegroundApp(payload.currentApp);
       if (timeBudget) timeBudget.check();
-      if (win && !win.isDestroyed()) win.webContents.send('tick', payload);
+      // budget rides along so the dashboard hero can show play-time / max + bonus live
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('tick', { ...payload, budget: store.getTimeBudgetStatus(), studySeconds: store.getToday().study || 0 });
+      }
     }
   });
   tracker.start();
