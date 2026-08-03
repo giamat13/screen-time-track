@@ -340,6 +340,11 @@ class BreakReminder {
     return this._tickPresence();
   }
 
+  _studyModeEnabled() {
+    const settings = this._getSettings() || {};
+    return !!settings.studyMode;
+  }
+
   _tickLock() {
     const now = Date.now();
     if (this._lockUntilAt !== null && now >= this._lockUntilAt) {
@@ -364,7 +369,7 @@ class BreakReminder {
   _tickPresence() {
     const settings = this._getSettings() || {};
     const s = settings.breakReminder || {};
-    if (!s.enabled) {
+    if (!s.enabled || this._studyModeEnabled()) {
       this._remainingMs = null; this._lastTickAt = null; this._awayAt = null;
       return;
     }
@@ -396,6 +401,12 @@ class BreakReminder {
   }
 
   _startBeeping({ phase, allowApprove, timeoutMs, onTimeout }) {
+    if (this._studyModeEnabled()) {
+      this._stopBeeping();
+      this._mode = 'idle';
+      this._remainingMs = null; this._lastTickAt = null; this._awayAt = null;
+      return;
+    }
     // Restart the beep loop cleanly even if one is already running (e.g. a
     // reminder beep escalating into a veto beep).
     this._killBeepProc();
@@ -441,6 +452,12 @@ class BreakReminder {
   //   'break'         — the real break; approve (min-lock) + debug buttons.
   //   'approve-short' — brief "get up and check" lock after pressing approve.
   _lock(mode) {
+    if (this._studyModeEnabled()) {
+      this._stopBeeping();
+      this._mode = 'idle';
+      this._remainingMs = null; this._lastTickAt = null; this._awayAt = null;
+      return false;
+    }
     this._killBeepProc();
     this._beepUntilAt = null;
     this._beepOnTimeout = null;

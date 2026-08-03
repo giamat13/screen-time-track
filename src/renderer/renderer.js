@@ -133,6 +133,8 @@ function applyStudyUI(on) {
   if (btn) btn.classList.toggle('active', studyOn);
   const cb = $('#set-studymode');
   if (cb) cb.checked = studyOn;
+  const brkCb = $('#brk-study-mode');
+  if (brkCb) brkCb.checked = studyOn;
 }
 
 async function toggleStudyMode(on) {
@@ -144,6 +146,7 @@ async function toggleStudyMode(on) {
 }
 
 $('#hero-study').addEventListener('click', () => toggleStudyMode(!studyOn));
+$('#brk-study-mode').addEventListener('change', (e) => toggleStudyMode(e.target.checked));
 
 function applyNotMeUI(on) {
   notMeOn = !!on;

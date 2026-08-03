@@ -45,6 +45,12 @@ class TimeBudget {
   // Call this whenever usage might have changed (tracker tick, after logging a
   // habit). Locks/unlocks/updates the on-screen state as needed.
   check() {
+    const settings = this._getSettings() || {};
+    if (settings.studyMode) {
+      this._clearWarning();
+      if (this._locked) this._unlock();
+      return;
+    }
     if (!this._cfg().enabled) {
       this._clearWarning();
       if (this._locked) this._unlock();
