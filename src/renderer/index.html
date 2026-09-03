@@ -444,6 +444,17 @@
                 </div>
                 <span class="subtle small" id="global-limit-status"></span>
               </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <label class="switch"><input type="checkbox" id="time-budget-on" /><span class="slider"></span></label>
+                <span class="subtle small">Lock the computer at this limit <span class="badge" id="time-budget-limit-lbl">—</span> (log a reward habit to earn more)</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <label class="switch"><input type="checkbox" id="time-budget-rollover" checked /><span class="slider"></span></label>
+                <span class="subtle small">Carry over yesterday's unused time into today</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <span class="subtle small" id="time-budget-status"></span>
+              </div>
             </div>
           </div>
           <div id="goals-add-form" class="hidden">
@@ -458,6 +469,38 @@
             </div>
           </div>
           <div id="goals-list"></div>
+        </div>
+
+        <div class="card" id="vault-card">
+          <div class="card-head">
+            <h3>&#128176; Vault</h3>
+            <span class="subtle small">Unused time is swept into the vault each day and grows weekly — withdraw it back whenever you want</span>
+          </div>
+          <div class="goal-row" id="vault-row">
+            <div class="goal-info">
+              <div class="goal-name">Balance <span class="badge" id="vault-balance">—</span></div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <label class="switch"><input type="checkbox" id="vault-on" /><span class="slider"></span></label>
+                <span class="subtle small">Enable the vault</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <span class="subtle small">Sweep</span>
+                <input type="number" class="text-input num" id="vault-sweep-pct" min="0" max="100" step="1" style="max-width:80px" />
+                <span class="subtle small">% of unused time daily</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <span class="subtle small">Growth</span>
+                <input type="number" class="text-input num" id="vault-growth-pct" min="0" step="1" style="max-width:80px" />
+                <span class="subtle small">% weekly</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <input type="number" class="text-input num" id="vault-deposit-amt" min="1" step="1" placeholder="Minutes" style="max-width:100px" />
+                <button class="btn ghost" id="vault-deposit-btn">Move to vault</button>
+                <input type="number" class="text-input num" id="vault-withdraw-amt" min="1" step="1" placeholder="Minutes" style="max-width:100px" />
+                <button class="btn primary" id="vault-withdraw-btn">Withdraw</button>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -501,57 +544,6 @@
           <div id="streak-habits-list"></div>
         </div>
 
-        <div class="card" id="time-budget-card">
-          <div class="card-head">
-            <h3>&#9203; Time Budget Lock</h3>
-            <span class="subtle small">Locks the computer once you pass the daily limit set above (log a reward habit to earn more)</span>
-          </div>
-          <div class="goal-row" id="time-budget-row">
-            <div class="goal-info">
-              <div class="goal-name">Lock the computer at the daily limit <span class="badge" id="time-budget-limit-lbl">—</span></div>
-              <div class="goals-add-row" style="margin-top:6px">
-                <label class="switch"><input type="checkbox" id="time-budget-on" /><span class="slider"></span></label>
-                <span class="subtle small" id="time-budget-status"></span>
-              </div>
-              <div class="goals-add-row" style="margin-top:6px">
-                <label class="switch"><input type="checkbox" id="time-budget-rollover" checked /><span class="slider"></span></label>
-                <span class="subtle small">Carry over yesterday's unused time into today</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card" id="vault-card">
-          <div class="card-head">
-            <h3>&#128176; Vault</h3>
-            <span class="subtle small">Unused time is swept into the vault each day and grows weekly — withdraw it back whenever you want</span>
-          </div>
-          <div class="goal-row" id="vault-row">
-            <div class="goal-info">
-              <div class="goal-name">Balance <span class="badge" id="vault-balance">—</span></div>
-              <div class="goals-add-row" style="margin-top:6px">
-                <label class="switch"><input type="checkbox" id="vault-on" /><span class="slider"></span></label>
-                <span class="subtle small">Enable the vault</span>
-              </div>
-              <div class="goals-add-row" style="margin-top:6px">
-                <span class="subtle small">Sweep</span>
-                <input type="number" class="text-input num" id="vault-sweep-pct" min="0" max="100" step="1" style="max-width:80px" />
-                <span class="subtle small">% of unused time daily</span>
-              </div>
-              <div class="goals-add-row" style="margin-top:6px">
-                <span class="subtle small">Growth</span>
-                <input type="number" class="text-input num" id="vault-growth-pct" min="0" step="1" style="max-width:80px" />
-                <span class="subtle small">% weekly</span>
-              </div>
-              <div class="goals-add-row" style="margin-top:6px">
-                <input type="number" class="text-input num" id="vault-deposit-amt" min="1" step="1" placeholder="Minutes" style="max-width:100px" />
-                <button class="btn ghost" id="vault-deposit-btn">Move to vault</button>
-                <input type="number" class="text-input num" id="vault-withdraw-amt" min="1" step="1" placeholder="Minutes" style="max-width:100px" />
-                <button class="btn primary" id="vault-withdraw-btn">Withdraw</button>
-              </div>
-            </div>
-          </div>
-        </div>
       </section>
 
       <!-- ============ HABITS ============ -->

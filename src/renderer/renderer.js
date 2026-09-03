@@ -866,8 +866,8 @@ function renderGlobalLimit(dash) {
   $('#global-limit-status').textContent = on ? `Today: ${fmt(used)} / ${fmtShort(globalLimit)}` : 'Off';
 }
 
-// Independent from the global-limit card above: this is the time-budget lock
-// (Piece C), not the streak-goal system — deliberately not merged with it.
+// Enable/enforce toggle for the same daily limit set by renderGlobalLimit above;
+// both live in the Daily Limits card now.
 async function renderTimeBudget() {
   const status = await api.getTimeBudgetStatus();
   $('#time-budget-on').checked = status.enabled;
