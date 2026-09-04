@@ -56,6 +56,7 @@ const log = require('./log');
 const store = require('./store');
 const { Tracker } = require('./tracker');
 const browserBridge = require('./browserBridge');
+const localApi = require('./localApi');
 const { BreakReminder } = require('./breakReminder');
 const { TimeBudget } = require('./timeBudget');
 const { TelegramBot } = require('./telegram');
@@ -174,6 +175,23 @@ function bootstrap() {
     setupIpc();
     applyAutoLaunch(store.getSettings().autoLaunch);
     browserBridge.start();
+    localApi.start(
+      () => {
+        const settings = store.getSettings();
+        const idleSeconds = Math.round(powerMonitor.getSystemIdleTime());
+        const idleThreshold = settings.idleThreshold || 120;
+        return {
+          present: !settings.studyMode && idleSeconds < idleThreshold,
+          idleSeconds,
+          idleThreshold,
+          tracking: settings.tracking,
+          locked,
+          currentApp: tracker ? tracker.getStatus().currentApp : null,
+          timestamp: Date.now(),
+        };
+      },
+      () => store.getToday()
+    );
     startTracker();
     startForest();
     startBreakReminder();
@@ -211,6 +229,7 @@ function bootstrap() {
     taskmgrBlock.unblock(); // never quit while leaving Task Manager blocked
     if (reminderScheduler) clearInterval(reminderScheduler);
     browserBridge.stop();
+    localApi.stop();
     store.flush();
     store.releaseOwnership(); // let the next instance take over immediately
     log.sessionEnd('before-quit'); // clears running.flag => next start reads "clean"
