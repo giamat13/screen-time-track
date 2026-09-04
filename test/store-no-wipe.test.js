@@ -39,15 +39,29 @@ assert.strictEqual(Object.keys(JSON.parse(fs.readFileSync(DATA, 'utf8')).days).l
   'main file rewritten with the recovered data, not defaults');
 assert.strictEqual(JSON.parse(fs.readFileSync(BAK, 'utf8')).habits.length, 1, 'habits survived');
 
-// --- 2. both copies unreadable: refuse to write, leave the bytes for recovery ----
+// --- 2. both live copies unreadable: fall back to a dated snapshot ---------------
+// DATA_FILE and BACKUP_FILE are written in the same flush from the same state, so
+// they die together (they did, on 2026-07-27). The snapshots are the only
+// independent generation, so load() reaches for them before giving up.
 fs.writeFileSync(DATA, '{ CORRUPT');
 fs.writeFileSync(BAK, '{ ALSO CORRUPT');
 delete require.cache[require.resolve('../src/main/store.js')];
 const store2 = require('../src/main/store.js');
 store2.load();
-assert.strictEqual(store2.isReadOnly(), true, 'must go read-only when nothing loaded');
-store2.addTime('Chrome', 60);
-store2.flush();
+assert.strictEqual(store2.isReadOnly(), false, 'a readable snapshot must be used, not read-only mode');
+assert.strictEqual(Object.keys(store2.raw().days).length, 1, 'recovered days from the snapshot');
+
+// --- 2b. nothing readable anywhere: refuse to write, leave the bytes for recovery -
+const snapDirs = [path.join(userData, 'backups'), path.join(userData, 'ScreenTime Backups')];
+for (const d of snapDirs) fs.rmSync(d, { recursive: true, force: true });
+fs.writeFileSync(DATA, '{ CORRUPT');
+fs.writeFileSync(BAK, '{ ALSO CORRUPT');
+delete require.cache[require.resolve('../src/main/store.js')];
+const store2b = require('../src/main/store.js');
+store2b.load();
+assert.strictEqual(store2b.isReadOnly(), true, 'must go read-only when nothing loaded');
+store2b.addTime('Chrome', 60);
+store2b.flush();
 assert.strictEqual(fs.readFileSync(DATA, 'utf8'), '{ CORRUPT', 'main file must be untouched');
 assert.strictEqual(fs.readFileSync(BAK, 'utf8'), '{ ALSO CORRUPT', 'backup must be untouched');
 
@@ -58,7 +72,8 @@ delete require.cache[require.resolve('../src/main/store.js')];
 const store3 = require('../src/main/store.js');
 store3.load();
 store3.flush();
-const snaps = fs.readdirSync(path.join(userData, 'backups'));
+// .json only — the dir also holds a logs/ copy of the forensic log.
+const snaps = fs.readdirSync(path.join(userData, 'backups')).filter((f) => f.endsWith('.json'));
 assert.strictEqual(snaps.length, 1, 'one dated snapshot written');
 assert.strictEqual(Object.keys(JSON.parse(
   fs.readFileSync(path.join(userData, 'backups', snaps[0]), 'utf8')).days).length, 1,

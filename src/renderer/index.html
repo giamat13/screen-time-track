@@ -72,6 +72,8 @@
             </div>
             <p class="hero-label" id="hero-label">Today's Screen Time</p>
             <div class="hero-time" id="hero-time">0<small>h</small> 0<small>m</small> 0<small>s</small></div>
+            <div class="hero-budget hidden" id="hero-budget"></div>
+            <div class="hero-study-line hidden" id="hero-study-line">&#128218; Study: <span id="hero-study-time">0m</span> <span class="muted">(not counted above)</span></div>
             <div class="hero-current"><span class="ico">&#9636;</span> Currently: <span id="hero-current-app">—</span> <span class="call-badge hidden" id="hero-call-badge">📞 On a call</span></div>
             <div class="hero-idle-banner">
               <span class="ico">&#128564;</span>
@@ -319,6 +321,10 @@
         <div class="card">
           <div class="card-head"><h3>🔒 Lock</h3></div>
           <div class="setting">
+            <div><div class="set-title">Study Mode</div><div class="subtle">When on, break locks and time-budget locks stay disabled until you turn it off</div></div>
+            <label class="switch"><input type="checkbox" id="brk-study-mode" /><span class="slider"></span></label>
+          </div>
+          <div class="setting">
             <div><div class="set-title">Break lock length</div><div class="subtle">Minutes the computer is fully locked when you take a break</div></div>
             <input type="number" class="text-input num" id="brk-lock-min" min="1" max="180" step="1" />
           </div>
@@ -438,6 +444,17 @@
                 </div>
                 <span class="subtle small" id="global-limit-status"></span>
               </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <label class="switch"><input type="checkbox" id="time-budget-on" /><span class="slider"></span></label>
+                <span class="subtle small">Lock the computer at this limit <span class="badge" id="time-budget-limit-lbl">—</span> (log a reward habit to earn more)</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <label class="switch"><input type="checkbox" id="time-budget-rollover" checked /><span class="slider"></span></label>
+                <span class="subtle small">Carry over yesterday's unused time into today</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <span class="subtle small" id="time-budget-status"></span>
+              </div>
             </div>
           </div>
           <div id="goals-add-form" class="hidden">
@@ -452,6 +469,38 @@
             </div>
           </div>
           <div id="goals-list"></div>
+        </div>
+
+        <div class="card" id="vault-card">
+          <div class="card-head">
+            <h3>&#128176; Vault</h3>
+            <span class="subtle small">Unused time is swept into the vault each day and grows weekly — withdraw it back whenever you want</span>
+          </div>
+          <div class="goal-row" id="vault-row">
+            <div class="goal-info">
+              <div class="goal-name">Balance <span class="badge" id="vault-balance">—</span></div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <label class="switch"><input type="checkbox" id="vault-on" /><span class="slider"></span></label>
+                <span class="subtle small">Enable the vault</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <span class="subtle small">Sweep</span>
+                <input type="number" class="text-input num" id="vault-sweep-pct" min="0" max="100" step="1" style="max-width:80px" />
+                <span class="subtle small">% of unused time daily</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <span class="subtle small">Growth</span>
+                <input type="number" class="text-input num" id="vault-growth-pct" min="0" step="1" style="max-width:80px" />
+                <span class="subtle small">% weekly</span>
+              </div>
+              <div class="goals-add-row" style="margin-top:6px">
+                <input type="number" class="text-input num" id="vault-deposit-amt" min="1" step="1" placeholder="Minutes" style="max-width:100px" />
+                <button class="btn ghost" id="vault-deposit-btn">Move to vault</button>
+                <input type="number" class="text-input num" id="vault-withdraw-amt" min="1" step="1" placeholder="Minutes" style="max-width:100px" />
+                <button class="btn primary" id="vault-withdraw-btn">Withdraw</button>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -494,6 +543,7 @@
           </div>
           <div id="streak-habits-list"></div>
         </div>
+
       </section>
 
       <!-- ============ HABITS ============ -->
@@ -579,6 +629,13 @@
               <input type="range" id="hab-target" min="0" max="20" step="1" value="1" />
               <span class="slider-val" id="hab-target-val">1×</span>
             </div>
+          </div>
+          <div class="setting">
+            <div>
+              <div class="set-title">&#9203; Time Reward</div>
+              <div class="subtle">Minutes of screen time earned per unit logged (0 = no bonus) — per count for a regular habit, per minute for a time-based one</div>
+            </div>
+            <input type="number" id="hab-time-reward" class="text-input" min="0" max="240" step="5" value="0" style="max-width:100px" />
           </div>
           <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
             <button class="btn ghost" id="hab-cancel">Cancel</button>
@@ -859,6 +916,7 @@
         <button class="btn ghost modal-btn" data-periods="3">3</button>
         <button class="btn primary modal-btn" data-periods="7">7</button>
         <button class="btn ghost modal-btn" data-periods="30">30</button>
+        <button class="btn ghost modal-btn" data-periods="forever">Forever</button>
       </div>
       <div class="modal-actions">
         <button class="btn ghost modal-btn" id="habpause-cancel-btn">Cancel</button>

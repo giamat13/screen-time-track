@@ -2,6 +2,7 @@
 const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const log = require('./log');
 
 const DATA_FILE = path.join(app.getPath('userData'), 'screen-time-data.json');
 const BACKUP_FILE = DATA_FILE + '.bak';
@@ -40,8 +41,10 @@ function defaults() {
     goals: {}, // { appName: targetSeconds }
     globalLimit: 0, // total daily screen-time cap across all apps (seconds); 0 = off
     goalsSnapshots: [], // [{ effectiveDate: 'YYYY-MM-DD', goals: {...}, globalLimit: N }]
+    budgetRollover: { forDate: null, seconds: 0 }, // yesterday's unused time budget, frozen at midnight
+    vault: { seconds: 0, lastAccrualDate: null }, // time banked long-term; grows daily, see _settleVault()
     reminders: [], // [{ id, time: 'HH:MM', message, enabled }]
-    habits: [], // [{ id, name, emoji, color, freqType: 'daily'|'weekly', target, createdAt, log: { 'YYYY-MM-DD': count } }]
+    habits: [], // [{ id, name, emoji, color, freqType: 'daily'|'weekly', target, timeReward, createdAt, entries: [{ ts, amount }] }]
     otherUsers: [], // [{ id, name, startedAt, endedAt }] — sessions logged while "Not Me" was on
     streaks: { current: 0, best: 0, lastCheckedDate: null, metDays: {}, freezers: 5, frozenDays: {} },
     forest: {
@@ -109,9 +112,49 @@ function defaults() {
           introSent: false,         // whether the first-time explanation was delivered
           knownUsers: {},           // learned @username(lowercase) -> chat id, from /start etc.
         },
-      }
+      },
+      timeBudget: {
+        enabled: false,     // when on, passing the daily limit locks the machine (see timeBudget.js).
+                             // The allowance itself is `globalLimit` — one limit for the goal streak
+                             // and the lock — topped up by habits with a timeReward that day.
+        rollover: true,     // on by default whenever the feature is on: yesterday's unused
+                             // allowance (if any) is added to today's budget (see getRolloverSecondsFromYesterday)
+      },
+      vault: {
+        enabled: true,
+        sweepPercent: 75,       // % of each day's unused budget that goes to the vault instead of rolling over
+        weeklyGrowthPercent: 10, // compounds daily to this much per 7 days, see _settleVault()
+      },
     }
   };
+}
+
+// ---- durable writes --------------------------------------------------------
+// THE data-loss bug. fs.writeFileSync returns as soon as the bytes are in the OS
+// page cache; it does not mean they reached the disk. NTFS journals *metadata*
+// (the file's new length) but not file *data*, so an unclean shutdown before the
+// cache flushes replays a file of exactly the right size filled with zeros.
+//
+// That is not a theory: after the 2026-07-27 power loss both screen-time-data.json
+// and its .bak were 110406 bytes of 0x00 — same length as the last good save, no
+// content. Three wipes, three unclean shutdowns in the Windows event log. The
+// write-to-temp-then-rename dance below is worthless without this fsync, because
+// renaming a file whose data never landed just gives the zeros a permanent name.
+function writeFileSyncDurable(file, contents) {
+  const fd = fs.openSync(file, 'w');
+  try {
+    fs.writeFileSync(fd, contents);
+    fs.fsyncSync(fd);   // block until the platter/SSD actually has it
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// A file of the right length full of NULs is the fingerprint of the failure
+// above. Worth naming explicitly in the log — "JSON parse error" alone sent the
+// last two investigations after the wrong cause.
+function looksZeroed(raw) {
+  return raw.length > 0 && !/[^\0]/.test(raw);
 }
 
 let data = defaults();
@@ -123,31 +166,98 @@ let loadFailed = false;
 // Set when a different live instance owns the data file; we then never write.
 let foreignOwner = false;
 
+// Every place a full copy of the data might live, most-authoritative first.
+// DATA_FILE and BACKUP_FILE are written from the same in-memory state in the same
+// flush, so they die together — as they did on 2026-07-27. The dated snapshots are
+// the only independent generation, so they belong in this chain: up to
+// SNAPSHOT_SLOT_HOURS stale beats the empty defaults that used to be the only
+// other option, and beats a human restoring it by hand.
+function recoveryCandidates() {
+  const snaps = [];
+  for (const dir of SNAPSHOT_DIRS) {
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch (e) { continue; }   // missing dir is normal
+    for (const n of names) {
+      if (!n.startsWith('screen-time-data.') || !n.endsWith('.json')) continue;
+      const file = path.join(dir, n);
+      try { snaps.push({ file, kind: 'snapshot', mtime: fs.statSync(file).mtimeMs }); }
+      catch (e) { /* vanished under us */ }
+    }
+  }
+  snaps.sort((a, b) => b.mtime - a.mtime);   // newest snapshot first
+  return [{ file: DATA_FILE, kind: 'main' }, { file: BACKUP_FILE, kind: 'backup' }, ...snaps];
+}
+
+// Move a copy we could not parse out of the way instead of letting the next flush
+// overwrite it. The bytes are evidence — the zeroed pair from 2026-07-27 is what
+// identified the real cause, and they would have been gone by morning.
+function quarantine(file) {
+  try {
+    const dir = path.join(app.getPath('userData'), 'corrupt');
+    fs.mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, `${path.basename(file)}.${Date.now()}`);
+    fs.copyFileSync(file, dest);
+    log.warn('store.load.quarantined', { from: file, to: dest });
+  } catch (e) {
+    log.error('store.load.quarantine_failed', { file, err: e.message });
+  }
+}
+
+// Walk the chain and return the first copy that parses.
+function readBestCopy() {
+  const failures = [];
+  for (const cand of recoveryCandidates()) {
+    let raw;
+    try {
+      raw = fs.readFileSync(cand.file, 'utf8');
+    } catch (e) {
+      if (e.code !== 'ENOENT') log.warn('store.load.unreadable', { kind: cand.kind, file: cand.file, err: e.message });
+      continue;                                   // a missing copy is normal, not a failure
+    }
+    const zeroed = looksZeroed(raw);
+    try {
+      const parsed = JSON.parse(raw);
+      log.info('store.load.candidate_ok', {
+        kind: cand.kind, file: cand.file, bytes: raw.length,
+        days: Object.keys(parsed.days || {}).length,
+        habits: (parsed.habits || []).length,
+        installedAt: parsed.installedAt,
+        skippedBroken: failures.length,
+      });
+      return { parsed, cand, failures };
+    } catch (e) {
+      failures.push({ kind: cand.kind, file: cand.file, bytes: raw.length, zeroed });
+      log.error('store.load.candidate_corrupt', {
+        kind: cand.kind, file: cand.file, bytes: raw.length,
+        allZeros: zeroed,
+        diagnosis: zeroed
+          ? 'file has correct length but no content — unclean shutdown before the page cache flushed (missing fsync)'
+          : 'malformed JSON — truncated or partially written',
+        head: JSON.stringify(raw.slice(0, 80)),
+        err: e.message,
+      });
+      if (cand.kind !== 'snapshot') quarantine(cand.file);
+    }
+  }
+  return { parsed: null, cand: null, failures };
+}
+
 function load() {
   claimOwnership();
   try {
-    let raw = null;
-    if (fs.existsSync(DATA_FILE)) {
-      raw = fs.readFileSync(DATA_FILE, 'utf8');
-    } else if (fs.existsSync(BACKUP_FILE)) {
-      // Main file vanished (deleted, failed rename) — the backup is still good.
-      console.error('[store] main file missing, loading backup');
-      raw = fs.readFileSync(BACKUP_FILE, 'utf8');
+    const { parsed, cand, failures } = readBestCopy();
+    if (parsed && failures.length) {
+      // We are alive only because of a fallback. Say so loudly — this is the line
+      // that should be at the top of the next investigation.
+      log.error('store.load.RECOVERED_FROM_FALLBACK', {
+        recoveredFrom: cand.kind, file: cand.file,
+        lostCopies: failures.map((f) => `${f.kind}${f.zeroed ? '(zeroed)' : '(corrupt)'}`).join(','),
+        note: cand.kind === 'snapshot'
+          ? 'up to 3h of tracking may be missing — both live copies were unusable'
+          : 'main file was unusable, backup carried the data',
+      });
     }
-    if (raw !== null) {
-      let parsed;
-      try {
-        parsed = JSON.parse(raw);
-      } catch (e) {
-        // Main file is corrupt (e.g. truncated by a crash mid-write) — fall back to
-        // the last known-good backup instead of silently resetting to empty defaults.
-        console.error('[store] main file corrupt, trying backup:', e.message);
-        if (fs.existsSync(BACKUP_FILE)) {
-          parsed = JSON.parse(fs.readFileSync(BACKUP_FILE, 'utf8'));
-        } else {
-          throw e;
-        }
-      }
+    if (parsed !== null) {
       data = Object.assign(defaults(), parsed);
       data.settings = Object.assign(defaults().settings, parsed.settings || {});
       if (parsed.settings?.breakReminder) {
@@ -160,6 +270,14 @@ function load() {
       data.days = parsed.days || {};
       data.goals = parsed.goals || {};
       data.globalLimit = parsed.globalLimit || 0;
+      // The lock's old private allowance is gone: the daily limit is now one
+      // number for both systems. Anyone who only ever set the lock's slider
+      // keeps their value by seeding the shared limit from it, once.
+      const legacyBudgetMinutes = ((parsed.settings || {}).timeBudget || {}).startMinutes || 0;
+      if (!data.globalLimit && legacyBudgetMinutes > 0) {
+        data.globalLimit = Math.round(legacyBudgetMinutes * 60);
+        log.info('store.migrate.budget_to_global_limit', { minutes: legacyBudgetMinutes });
+      }
       data.goalsSnapshots = parsed.goalsSnapshots || [];
       // Migrate: if no snapshots exist yet, seed one from the current goals.
       // Use today as the effectiveDate so past days without goals aren't counted.
@@ -192,12 +310,35 @@ function load() {
         data.forest.distractions = Object.assign(defaults().forest.distractions, parsed.forest.distractions || {});
         data.forest.settings = Object.assign(defaults().forest.settings, parsed.forest.settings || {});
       }
+      log.info('store.load.ok', {
+        source: cand.kind,
+        days: Object.keys(data.days).length,
+        firstDay: Object.keys(data.days).sort()[0],
+        lastDay: Object.keys(data.days).sort().slice(-1)[0],
+        totalHours: +(Object.values(data.days).reduce((s, d) => s + (d.total || 0), 0) / 3600).toFixed(2),
+        habits: (data.habits || []).length,
+        goals: Object.keys(data.goals || {}).length,
+        trees: (data.forest.trees || []).length,
+        coins: data.forest.coins,
+        streak: data.streaks && data.streaks.current,
+        readOnly: isReadOnly(),
+      });
+    } else if (failures.length) {
+      // Copies existed but none parsed. Empty defaults in memory are fine; *saving*
+      // them would overwrite every copy with nothing — the exact path that turns one
+      // bad read into total loss. Go read-only and let the user decide.
+      loadFailed = true;
+      log.error('store.load.ALL_COPIES_UNREADABLE', {
+        tried: failures.length,
+        detail: failures.map((f) => `${f.kind}:${f.bytes}b${f.zeroed ? ':ZEROED' : ''}`).join(' '),
+        action: 'saving disabled — originals copied to the corrupt/ folder',
+      });
+    } else {
+      log.info('store.load.fresh_install', { dataFile: DATA_FILE });
     }
   } catch (e) {
-    console.error('[store] load failed:', e.message);
-    // Data exists on disk but we could not read it. Starting from empty defaults is
-    // fine in memory, but saving them would overwrite both copies with nothing — the
-    // exact path that turned one bad read into total data loss. Go read-only instead.
+    log.error('store.load.threw', { err: e.message, stack: e.stack });
+    // Same rule as above: never let a failed read become an empty-defaults save.
     loadFailed = fs.existsSync(DATA_FILE) || fs.existsSync(BACKUP_FILE);
     data = defaults();
   }
@@ -229,23 +370,42 @@ function ownedByOther() {
 }
 
 function claimOwnership() {
+  const prev = readOwner();
   foreignOwner = ownedByOther();
   if (foreignOwner) {
-    const owner = readOwner();
-    console.error(`[store] another instance owns the data (pid ${owner.pid}) — not saving`);
+    log.error('store.owner.refused', {
+      ownerPid: prev.pid, ownerExe: prev.exe,
+      ageMs: Date.now() - (prev.ts || 0),
+      me: process.execPath,
+      action: 'saving disabled for this instance so it cannot clobber the live one',
+    });
     return false;
+  }
+  if (prev && prev.pid !== process.pid) {
+    log.warn('store.owner.taking_over', {
+      stalePid: prev.pid, staleExe: prev.exe,
+      ageMs: Date.now() - (prev.ts || 0),
+      alive: pidAlive(prev.pid),
+      why: Date.now() - (prev.ts || 0) > OWNER_STALE_MS ? 'claim expired' : 'owner process is gone',
+    });
   }
   try {
     fs.writeFileSync(OWNER_FILE, JSON.stringify({ pid: process.pid, exe: process.execPath, ts: Date.now() }));
-  } catch (e) { console.error('[store] owner claim failed:', e.message); }
+    log.info('store.owner.claimed', { exe: process.execPath });
+  } catch (e) { log.error('store.owner.claim_failed', { err: e.message }); }
   return true;
 }
 
 function releaseOwnership() {
   try {
     const owner = readOwner();
-    if (owner && owner.pid === process.pid) fs.unlinkSync(OWNER_FILE);
-  } catch (e) { /* nothing useful to do on exit */ }
+    if (owner && owner.pid === process.pid) {
+      fs.unlinkSync(OWNER_FILE);
+      log.info('store.owner.released', {});
+    } else {
+      log.warn('store.owner.release_skipped', { ownerPid: owner && owner.pid, me: process.pid });
+    }
+  } catch (e) { log.warn('store.owner.release_failed', { err: e.message }); }
 }
 
 function scheduleSave() {
@@ -258,21 +418,28 @@ function scheduleSave() {
 // is wall-clock, the break keeps "ticking" even while the machine is powered
 // off — reboot to escape and you just come back to whatever is left (or to no
 // lock at all if the whole break elapsed while you were off).
+// Durable, not merely synchronous: writeFileSync alone would leave this in the page
+// cache, and "survives a hard power-off" is the entire point of the file.
 function saveLockState(state) {
-  try { fs.writeFileSync(LOCK_FILE, JSON.stringify(state)); }
-  catch (e) { console.error('[store] lock save failed:', e.message); }
+  try { writeFileSyncDurable(LOCK_FILE, JSON.stringify(state)); }
+  catch (e) { log.error('store.lock.save_failed', { err: e.message, state }); }
 }
 
 function readLockState() {
   try {
-    if (fs.existsSync(LOCK_FILE)) return JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
-  } catch (e) { console.error('[store] lock read failed:', e.message); }
+    if (fs.existsSync(LOCK_FILE)) {
+      const s = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
+      log.info('store.lock.read', { ...s, remainingMs: s && s.endsAt ? s.endsAt - Date.now() : null });
+      return s;
+    }
+  } catch (e) { log.error('store.lock.read_failed', { err: e.message }); }
   return null;
 }
 
 function clearLockState() {
-  try { if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE); }
-  catch (e) { console.error('[store] lock clear failed:', e.message); }
+  try {
+    if (fs.existsSync(LOCK_FILE)) { fs.unlinkSync(LOCK_FILE); log.info('store.lock.cleared', {}); }
+  } catch (e) { log.error('store.lock.clear_failed', { err: e.message }); }
 }
 
 // Keep one copy per 3-hour slot, so a wipe that a guard *doesn't* catch is still
@@ -293,37 +460,102 @@ function rollingSnapshot(json) {
       const file = path.join(dir, `screen-time-data.${slot}.json`);
       // First write of the slot wins: it holds the state as it was before anything
       // in this window had a chance to damage it.
-      if (!fs.existsSync(file)) fs.writeFileSync(file, json);
+      if (!fs.existsSync(file)) {
+        writeFileSyncDurable(file, json);
+        log.info('store.snapshot.written', { slot, file, bytes: json.length });
+      }
+      // Carry the forensic log along with the data it explains, so the record
+      // survives losing the whole profile folder (Documents is covered by File
+      // History / OneDrive; userData is not). Overwritten each slot — the log
+      // only grows, so the newest copy is always the most complete.
+      try {
+        const src = log.currentFile();
+        if (fs.existsSync(src)) {
+          fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
+          fs.copyFileSync(src, path.join(dir, 'logs', path.basename(src)));
+        }
+      } catch (e) { log.warn('store.snapshot.log_copy_failed', { dir, err: e.message }); }
     } catch (e) {
-      console.error(`[store] snapshot failed (${dir}):`, e.message);
+      log.error('store.snapshot.failed', { dir, slot, err: e.message });
     }
   }
 }
 
+// Last successful flush, so the next one can notice the payload shrinking — the
+// signature of the in-memory state having been reset under us.
+const lastFlush = { bytes: 0, days: 0, loggedAt: 0, count: 0 };
+
 function flush() {
-  if (loadFailed) return;                     // never overwrite data we failed to read
+  if (loadFailed) {                           // never overwrite data we failed to read
+    log.warn('store.flush.blocked', { reason: 'load-failed', pendingDays: Object.keys(data.days).length });
+    return;
+  }
   if (foreignOwner || ownedByOther()) {       // never clobber a live instance's data
+    if (!foreignOwner) {
+      const o = readOwner();
+      log.error('store.flush.blocked', { reason: 'foreign-owner', ownerPid: o && o.pid, ownerExe: o && o.exe });
+    }
     foreignOwner = true;
     return;
   }
   try {
     // Keep the claim fresh so a second instance can tell we are still alive.
     fs.writeFileSync(OWNER_FILE, JSON.stringify({ pid: process.pid, exe: process.execPath, ts: Date.now() }));
-  } catch (e) { /* non-fatal: the data write below still matters more */ }
+  } catch (e) { log.warn('store.flush.owner_refresh_failed', { err: e.message }); }
+
+  const started = Date.now();
+  let json;
   try {
     // Write both from the same known-good in-memory snapshot — never copy DATA_FILE's
     // raw bytes into the backup, or a crash-corrupted main file would clobber the one
     // copy we could still recover from.
-    const json = JSON.stringify(data);
-    rollingSnapshot(json);
-    // Write to a temp file and rename, so a crash mid-write can't truncate the real
-    // file. On NTFS the rename replaces atomically.
-    fs.writeFileSync(TMP_FILE, json);
-    fs.renameSync(TMP_FILE, DATA_FILE);
-    fs.writeFileSync(BACKUP_FILE, json);
+    json = JSON.stringify(data);
   } catch (e) {
-    console.error('[store] save failed:', e.message);
+    log.error('store.flush.serialize_failed', { err: e.message, stack: e.stack });
+    return;
   }
+
+  const days = Object.keys(data.days).length;
+  if (lastFlush.bytes && (json.length < lastFlush.bytes * 0.9 || days < lastFlush.days)) {
+    // The guards above are meant to make this impossible. If it ever fires, this is
+    // the line that names the bug we have been unable to reproduce.
+    log.error('store.flush.SHRANK', {
+      wasBytes: lastFlush.bytes, nowBytes: json.length,
+      wasDays: lastFlush.days, nowDays: days,
+      habits: (data.habits || []).length,
+      trees: (data.forest.trees || []).length,
+      stack: new Error('flush shrink').stack,
+    });
+  }
+
+  try {
+    rollingSnapshot(json);
+    // Temp file + rename so a crash mid-write can't leave a half-written main file.
+    // The fsync inside writeFileSyncDurable is what makes the rename mean anything:
+    // without it the rename is journaled while the data is not, and a power loss
+    // publishes a correctly-named file full of zeros.
+    writeFileSyncDurable(TMP_FILE, json);
+    fs.renameSync(TMP_FILE, DATA_FILE);
+    writeFileSyncDurable(BACKUP_FILE, json);
+  } catch (e) {
+    log.error('store.flush.failed', { err: e.message, code: e.code, stack: e.stack, bytes: json.length });
+    return;
+  }
+
+  lastFlush.count++;
+  const changed = json.length !== lastFlush.bytes || days !== lastFlush.days;
+  // Every flush is logged at most once a minute — enough to be a heartbeat that
+  // pins down how far the app got before it died, without 15k lines a day.
+  if (changed && Date.now() - lastFlush.loggedAt > 60000) {
+    log.info('store.flush.ok', {
+      bytes: json.length, deltaBytes: json.length - lastFlush.bytes, days,
+      todaySec: Math.round((data.days[dateKey()] || {}).total || 0),
+      flushes: lastFlush.count, ms: Date.now() - started,
+    });
+    lastFlush.loggedAt = Date.now();
+  }
+  lastFlush.bytes = json.length;
+  lastFlush.days = days;
 }
 
 function dateKey(d = new Date()) {
@@ -333,15 +565,45 @@ function dateKey(d = new Date()) {
   return `${y}-${m}-${day}`;
 }
 
+function clampPercent(v, max = 100) {
+  const n = Number(v);
+  if (!isFinite(n)) return 0;
+  return Math.min(max, Math.max(0, n));
+}
+
 function ensureDay(key) {
   if (!data.days[key]) {
     const now = new Date().toISOString();
-    data.days[key] = { apps: {}, total: 0, firstSeen: now, lastSeen: now, hours: new Array(24).fill(0), studyApps: {}, study: 0 };
+    // Freeze what yesterday left over before the new day starts, using the budget
+    // settings that were actually in force then. Recomputing it later would let a
+    // change to startMinutes today silently rewrite yesterday's leftover.
+    const unused = unusedBudgetOn(prevKey(key));
+    const vaultCfg = (data.settings && data.settings.vault) || defaults().settings.vault;
+    const sweepPct = vaultCfg.enabled !== false ? clampPercent(vaultCfg.sweepPercent) : 0;
+    const toVault = unused * (sweepPct / 100);
+    const carried = unused - toVault;
+    data.days[key] = {
+      apps: {}, total: 0, firstSeen: now, lastSeen: now, hours: new Array(24).fill(0), studyApps: {}, study: 0,
+      vaultDeposited: 0, vaultWithdrawn: 0,
+    };
+    data.budgetRollover = { forDate: key, seconds: carried };
+    if (toVault > 0) {
+      _settleVault(); // apply growth up to today before adding the fresh sweep
+      data.vault.seconds += toVault;
+    }
+    // Day rollover: one line a day, and the cheapest way to prove the history was
+    // still intact at midnight if it is missing the morning after.
+    log.info('store.day.created', {
+      day: key, daysNow: Object.keys(data.days).length,
+      rolloverSeconds: Math.round(carried), vaultSweptSeconds: Math.round(toVault),
+    });
   }
   // Backfill buckets for days created before those features existed.
   if (!Array.isArray(data.days[key].hours)) data.days[key].hours = new Array(24).fill(0);
   if (!data.days[key].studyApps) data.days[key].studyApps = {};
   if (typeof data.days[key].study !== 'number') data.days[key].study = 0;
+  if (typeof data.days[key].vaultDeposited !== 'number') data.days[key].vaultDeposited = 0;
+  if (typeof data.days[key].vaultWithdrawn !== 'number') data.days[key].vaultWithdrawn = 0;
   return data.days[key];
 }
 
@@ -395,6 +657,9 @@ function debugSubtractToday(seconds) {
   seconds = Math.max(0, Math.round(Number(seconds) || 0));
   const key = dateKey();
   const day = data.days[key];
+  // Dev-only, but it deliberately destroys real recorded time. If today's total ever
+  // looks wrong, this line answers "did someone press the debug button?" instantly.
+  log.warn('store.debug.subtract_today', { seconds, dayTotalBefore: day && Math.round(day.total) });
   if (seconds <= 0 || !day) return getToday();
   const hour = new Date().getHours();
   let remaining = seconds;
@@ -560,6 +825,141 @@ function setGoal(appName, targetSeconds) {
   recordGoalsSnapshot();
   flush();
   return data.goals;
+}
+
+function getPlaySecondsForDay(key) {
+  const day = data.days[key];
+  if (!day) return 0;
+  return Math.max(0, (day.total || 0) - (day.study || 0));
+}
+function getTodayPlaySeconds() { return getPlaySecondsForDay(dateKey()); }
+
+function prevKey(key) {
+  const d = new Date(`${key}T12:00:00`);
+  d.setDate(d.getDate() - 1);
+  return dateKey(d);
+}
+
+// How much of `key`'s allowance went unused. Requires an actual tracked day; no
+// day record means no leftover, rather than assuming a fresh install's silent
+// "day" was entirely unused. A manual vault deposit that day already left the
+// day's usable budget, so it isn't unused; a withdrawal added to it, so it is.
+function unusedBudgetOn(key) {
+  const day = data.days[key];
+  if (!day) return 0;
+  const vaultDeposited = day.vaultDeposited || 0;
+  const vaultWithdrawn = day.vaultWithdrawn || 0;
+  return Math.max(0, dailyLimitSeconds() + getTimeBudgetEarnedSecondsForDay(key) - getPlaySecondsForDay(key) - vaultDeposited + vaultWithdrawn);
+}
+
+// Yesterday's unused allowance, if rollover is on. Frozen into data.budgetRollover
+// by ensureDay() the moment the new day is created, so it survives restarts and
+// isn't rewritten when today's startMinutes changes. The live fallback only runs
+// for a day record created before this was stored (i.e. right after upgrading).
+function getRolloverSecondsFromYesterday() {
+  const cfg = (data.settings && data.settings.timeBudget) || {};
+  if (cfg.rollover === false) return 0;
+  const today = dateKey();
+  const saved = data.budgetRollover;
+  if (saved && saved.forDate === today) return Math.max(0, saved.seconds || 0);
+  return unusedBudgetOn(prevKey(today));
+}
+
+// One daily limit for both systems: the goal streak checks it (checkGoalsMet)
+// and the lock enforces it. `globalLimit` is the source of truth; the budget's
+// legacy startMinutes only survives as a migration seed (see load()).
+function dailyLimitSeconds() {
+  return Math.max(0, Math.round(data.globalLimit || 0));
+}
+
+function getTimeBudgetStatus() {
+  const cfg = (data.settings && data.settings.timeBudget) || { enabled: false, rollover: true };
+  const startSeconds = dailyLimitSeconds();
+  const earnedSeconds = getTimeBudgetEarnedSecondsToday();
+  const rolloverSeconds = getRolloverSecondsFromYesterday();
+  const todayRec = data.days[dateKey()];
+  const vaultDeposited = (todayRec && todayRec.vaultDeposited) || 0;
+  const vaultWithdrawn = (todayRec && todayRec.vaultWithdrawn) || 0;
+  return {
+    // No limit means nothing to enforce: a 0-second allowance would lock the
+    // machine the instant tracking starts, with no way to earn out of it.
+    enabled: !!cfg.enabled && startSeconds > 0,
+    startMinutes: Math.round(startSeconds / 60),
+    rollover: cfg.rollover !== false,
+    startSeconds,
+    earnedSeconds,
+    rolloverSeconds,
+    vaultDeposited,
+    vaultWithdrawn,
+    budgetSeconds: startSeconds + earnedSeconds + rolloverSeconds - vaultDeposited + vaultWithdrawn,
+    usedSeconds: getTodayPlaySeconds(),
+  };
+}
+
+// ---------------- vault (long-term time savings) ----------------
+function daysBetweenKeys(a, b) {
+  return Math.round((new Date(`${b}T12:00:00`) - new Date(`${a}T12:00:00`)) / 86400000);
+}
+
+// Lazily settle growth: (1+dailyRate)^7 == 1+weeklyGrowthPercent/100, so a
+// day's rate is the 7th root of the weekly one rather than a linear 1/7th.
+// Rate is recomputed from the *current* setting every time — a changed
+// setting applies going forward only, never retroactively.
+function _settleVault() {
+  if (!data.vault) data.vault = defaults().vault;
+  const today = dateKey();
+  if (!data.vault.lastAccrualDate) { data.vault.lastAccrualDate = today; return; }
+  const elapsed = daysBetweenKeys(data.vault.lastAccrualDate, today);
+  if (elapsed <= 0) return;
+  const cfg = (data.settings && data.settings.vault) || defaults().settings.vault;
+  const weeklyPct = Math.max(0, Number(cfg.weeklyGrowthPercent) || 0);
+  const dailyRate = Math.pow(1 + weeklyPct / 100, 1 / 7) - 1;
+  data.vault.seconds *= Math.pow(1 + dailyRate, elapsed);
+  data.vault.lastAccrualDate = today;
+  scheduleSave();
+}
+
+function getVaultStatus() {
+  _settleVault();
+  const cfg = (data.settings && data.settings.vault) || defaults().settings.vault;
+  return {
+    enabled: cfg.enabled !== false,
+    seconds: Math.round(data.vault.seconds),
+    sweepPercent: cfg.sweepPercent,
+    weeklyGrowthPercent: cfg.weeklyGrowthPercent,
+  };
+}
+
+// Moves seconds out of today's still-usable budget into the vault. Clamped to
+// what's actually left today so the same time can't also be spent today.
+function depositToVault(seconds) {
+  seconds = Math.max(0, Math.round(Number(seconds) || 0));
+  if (seconds <= 0) return getVaultStatus();
+  const status = getTimeBudgetStatus();
+  const remaining = Math.max(0, status.budgetSeconds - status.usedSeconds);
+  const amount = Math.min(seconds, remaining);
+  if (amount <= 0) return getVaultStatus();
+  _settleVault();
+  data.vault.seconds += amount;
+  const day = ensureDay(dateKey());
+  day.vaultDeposited = (day.vaultDeposited || 0) + amount;
+  flush();
+  return getVaultStatus();
+}
+
+// Moves seconds from the vault into today's usable budget. Clamped to the
+// (post-settle) vault balance.
+function withdrawFromVault(seconds) {
+  seconds = Math.max(0, Math.round(Number(seconds) || 0));
+  _settleVault();
+  if (seconds <= 0) return getVaultStatus();
+  const amount = Math.min(seconds, data.vault.seconds);
+  if (amount <= 0) return getVaultStatus();
+  data.vault.seconds -= amount;
+  const day = ensureDay(dateKey());
+  day.vaultWithdrawn = (day.vaultWithdrawn || 0) + amount;
+  flush();
+  return getVaultStatus();
 }
 
 function checkGoalsMet(key) {
@@ -746,6 +1146,26 @@ function habitPausedSet(h) {
   return new Set(Array.isArray(h.pausedPeriods) ? h.pausedPeriods : []);
 }
 
+// Set of paused period keys, expanded to include an indefinite ("forever")
+// pause from its start period through today/this-week — bounded to "now" on
+// purpose, so this stays cheap instead of pre-generating years of future keys.
+function effectivePausedSet(h) {
+  const set = habitPausedSet(h);
+  if (h.pausedForever && h.pausedForeverSince) {
+    const weekly = h.freqType === 'weekly';
+    const step = weekly ? 7 : 1;
+    let d = new Date(h.pausedForeverSince + 'T00:00:00');
+    const now = new Date();
+    let guard = 0;
+    while (d <= now && guard < 3660) {
+      set.add(dateKey(d));
+      d.setDate(d.getDate() + step);
+      guard++;
+    }
+  }
+  return set;
+}
+
 function currentPeriodKey(weekly) {
   return weekly ? dateKey(weekStart()) : dateKey();
 }
@@ -771,7 +1191,9 @@ function dayMapOf(h) {
   const map = {};
   for (const en of habitEntries(h)) {
     const k = dateKey(new Date(en.ts));
-    map[k] = (map[k] || 0) + (en.amount || 0);
+    // rounded because amounts can be fractional (0.25, 0.5) — raw float sums
+    // drift just under a target and would silently fail a met-day check.
+    map[k] = Math.round(((map[k] || 0) + (en.amount || 0)) * 100) / 100;
   }
   return map;
 }
@@ -815,7 +1237,10 @@ function weeklyStreakMap(map, target) {
 // Returns { streak, freezers, frozenPeriods } where frozenPeriods is an array of
 // date strings (YYYY-MM-DD) that were saved by a freeze.
 // Walks the full history forward so earnings and spends stay consistent.
-function calcHabitStreak(map, createdAt, target, weekly, pausedSet = new Set(), bonusFreezers = 0) {
+// `overachieve`: a period where you did at least twice the target earns an extra
+// freezer. Off for track-only habits, whose target is a stand-in 1 — every
+// second log would mint a freezer and the whole mechanic would be free.
+function calcHabitStreak(map, createdAt, target, weekly, pausedSet = new Set(), bonusFreezers = 0, overachieve = false) {
   const today = dateKey();
   const created = createdAt ? dateKey(new Date(createdAt)) : today;
 
@@ -846,14 +1271,14 @@ function calcHabitStreak(map, createdAt, target, weekly, pausedSet = new Set(), 
 
     if (pausedSet.has(p.key)) continue; // paused period — a day/week off, neutral for the streak
 
-    const met = weekly
-      ? weekSumMap(map, p.ws) >= target
-      : (map[p.key] || 0) >= target;
+    const amount = weekly ? weekSumMap(map, p.ws) : (map[p.key] || 0);
+    const met = amount >= target;
 
     if (met) {
       streak++;
       metRun++;
       if (metRun > 0 && metRun % HABIT_FREEZER_EVERY === 0) freezers++;
+      if (overachieve && target > 0 && amount >= target * 2) freezers++; // did double — bank a freeze
     } else if (isToday) {
       // current period still in progress — don't penalise
     } else {
@@ -887,7 +1312,7 @@ function enrichHabit(h) {
   let totalDone = 0;
   for (const v of Object.values(map)) totalDone += v;
 
-  const pausedSet = habitPausedSet(h);
+  const pausedSet = effectivePausedSet(h);
   const paused = pausedSet.has(currentPeriodKey(weekly));
 
   // How much of the current pause is still ahead, so the UI can say "paused for N"
@@ -903,7 +1328,7 @@ function enrichHabit(h) {
   }
 
   let periodCount, best;
-  const { streak, freezers, frozenPeriods } = calcHabitStreak(map, h.createdAt, effectiveTarget, weekly, pausedSet, h.freezerBonus || 0);
+  const { streak, freezers, frozenPeriods } = calcHabitStreak(map, h.createdAt, effectiveTarget, weekly, pausedSet, h.freezerBonus || 0, !trackOnly);
   if (weekly) {
     periodCount = weekSumMap(map, weekStart());
     const metWeeks = [];
@@ -954,6 +1379,7 @@ function enrichHabit(h) {
     unit,
     customUnit: h.customUnit,
     target,
+    timeReward: h.timeReward || 0,
     trackOnly,
     createdAt: h.createdAt,
     todayCount: map[today] || 0,
@@ -965,6 +1391,7 @@ function enrichHabit(h) {
     freezers,
     frozenPeriods,
     paused,
+    pausedForever: !!h.pausedForever,
     pausedPeriodsLeft,
     totalDone,
     entryCount: entries.length,
@@ -994,6 +1421,7 @@ function addHabit(h) {
     unit,
     customUnit: unit === 'custom' ? (String(h.customUnit || '').trim().slice(0, 20) || 'units') : undefined,
     target: clampTarget(unit, h.target),
+    timeReward: Math.max(0, parseInt(h.timeReward, 10) || 0),
     createdAt: new Date().toISOString(),
     entries: []
   };
@@ -1013,12 +1441,19 @@ function updateHabit(id, partial) {
   if (partial.unit != null) h.unit = partial.unit === 'minutes' ? 'minutes' : partial.unit === 'custom' ? 'custom' : 'count';
   if (partial.customUnit != null) h.customUnit = String(partial.customUnit).trim().slice(0, 20) || 'units';
   if (partial.target != null) h.target = clampTarget(habitUnit(h), partial.target);
+  if (partial.timeReward != null) h.timeReward = Math.max(0, parseInt(partial.timeReward, 10) || 0);
   flush();
   return enrichHabit(h);
 }
 
 function deleteHabit(id) {
+  const gone = (data.habits || []).find((x) => x.id === id);
   data.habits = (data.habits || []).filter((x) => x.id !== id);
+  // Destructive and irreversible from the UI — always worth a line.
+  log.warn('store.habit.deleted', {
+    id, name: gone && gone.name, entries: gone && (gone.entries || []).length,
+    remaining: data.habits.length,
+  });
   flush();
   return getHabits();
 }
@@ -1037,10 +1472,16 @@ function toggleHabitPause(id, periods = 1) {
   const weekly = h.freqType === 'weekly';
   const key = currentPeriodKey(weekly);
 
-  if (h.pausedPeriods.includes(key)) {
-    // Resuming: drop the current period and everything still ahead of it, so one
-    // click cancels the rest of a multi-day pause. Past periods stay as they were.
+  if (h.pausedForever || h.pausedPeriods.includes(key)) {
+    // Resuming (from either an indefinite pause or a dated one): clear the
+    // forever flag and drop the current period and everything still ahead of
+    // it, so one click cancels the rest of a multi-day pause too.
+    h.pausedForever = false;
+    h.pausedForeverSince = undefined;
     h.pausedPeriods = h.pausedPeriods.filter((k) => k < key);
+  } else if (periods === 'forever') {
+    h.pausedForever = true;
+    h.pausedForeverSince = key; // period this indefinite pause started from
   } else {
     const n = Math.min(Math.max(Math.round(Number(periods)) || 1, 1), 365);
     const start = weekly ? weekStart() : new Date();
@@ -1063,7 +1504,7 @@ function logHabit(id, amount = 1, when = null) {
   const h = (data.habits || []).find((x) => x.id === id);
   if (!h) return null;
   const entries = habitEntries(h);
-  amount = Number(amount) || 0;
+  amount = Math.round((Number(amount) || 0) * 100) / 100; // fractional logs allowed (0.25, 0.5)
 
   if (amount > 0) {
     let ts;
@@ -1088,6 +1529,42 @@ function logHabit(id, amount = 1, when = null) {
   return enrichHabit(h);
 }
 
+// Amounts typed on the lock screen buy time out of a lock, so they don't get to
+// be arbitrary: positive, 2 decimals, and capped. Anything unusable falls back
+// to a single unit rather than failing the log.
+function clampLogAmount(v, fallback = 1) {
+  const n = Number(v);
+  if (!isFinite(n) || n <= 0) return fallback;
+  return Math.min(1000, Math.round(n * 100) / 100);
+}
+
+// How many screen-time minutes a single log entry of `amount` earns for habit
+// `h`. Flat "per 1" scaling for every habit type: count/custom earns
+// timeReward per unit logged, minutes habits earn timeReward per minute logged.
+function timeRewardMinutesFor(h, amount) {
+  const reward = Math.max(0, Number(h.timeReward) || 0);
+  if (!reward || !(amount > 0)) return 0;
+  return reward * amount;
+}
+
+// Sum of timeReward minutes across every positive habit-log entry made on the
+// given day, for habits that have a reward configured. Feeds the time-budget
+// lock (see timeBudget.js) — every logged completion tops up that day's
+// screen-time allowance.
+function getTimeBudgetEarnedSecondsForDay(key) {
+  let sec = 0;
+  for (const h of (data.habits || [])) {
+    if (!(Number(h.timeReward) > 0)) continue;
+    for (const en of habitEntries(h)) {
+      if (en.amount > 0 && dateKey(new Date(en.ts)) === key) sec += timeRewardMinutesFor(h, en.amount) * 60;
+    }
+  }
+  return sec;
+}
+function getTimeBudgetEarnedSecondsToday() {
+  return getTimeBudgetEarnedSecondsForDay(dateKey());
+}
+
 // ---- main-streak unification ----
 // Daily habits are strict: a past day fails if any daily habit that existed then was
 // not fully met. Weekly habits are judged once, on the Saturday that closes their week.
@@ -1105,7 +1582,7 @@ function dailyHabitsState(key) {
     const created = h.createdAt ? dateKey(new Date(h.createdAt)) : key;
     if (key < created && !(map[key] > 0)) continue; // didn't exist yet and nothing logged
     if (clampTarget(habitUnit(h), h.target) === 0) continue; // track-only habit never blocks streak
-    if (habitPausedSet(h).has(key)) continue; // paused that day — doesn't obligate the main streak either
+    if (effectivePausedSet(h).has(key)) continue; // paused that day — doesn't obligate the main streak either
     any = true;
     if ((map[key] || 0) < clampTarget(habitUnit(h), h.target)) allMet = false;
   }
@@ -1127,7 +1604,7 @@ function weeklyHabitsState(key) {
     const sum = weekSumMap(dayMapOf(h), ws);
     if (wsKey < created && !(sum > 0)) continue; // habit didn't exist that week, nothing logged
     if (clampTarget(habitUnit(h), h.target) === 0) continue; // track-only habit never blocks streak
-    if (habitPausedSet(h).has(wsKey)) continue; // paused that week — doesn't obligate the main streak either
+    if (effectivePausedSet(h).has(wsKey)) continue; // paused that week — doesn't obligate the main streak either
     any = true;
     if (sum < clampTarget(habitUnit(h), h.target)) return false;
   }
@@ -1165,6 +1642,29 @@ function setSettings(partial) {
       );
     }
   }
+  if (partial.timeBudget) {
+    next.timeBudget = Object.assign({}, data.settings.timeBudget, partial.timeBudget);
+  }
+  if (partial.vault) {
+    next.vault = Object.assign({}, data.settings.vault, partial.vault);
+    if (partial.vault.sweepPercent != null) next.vault.sweepPercent = clampPercent(partial.vault.sweepPercent);
+    if (partial.vault.weeklyGrowthPercent != null) {
+      next.vault.weeklyGrowthPercent = Math.max(0, Number(partial.vault.weeklyGrowthPercent) || 0);
+    }
+  }
+  // Log which keys actually moved, with the token redacted — settings changes are a
+  // prime suspect whenever behaviour changes "for no reason".
+  const changed = {};
+  for (const k of Object.keys(partial)) {
+    if (k === 'breakReminder') continue;      // nested; summarised below
+    if (JSON.stringify(data.settings[k]) !== JSON.stringify(next[k])) changed[k] = next[k];
+  }
+  if (partial.breakReminder) {
+    const br = { ...next.breakReminder };
+    if (br.telegram) br.telegram = { ...br.telegram, botToken: br.telegram.botToken ? '<set>' : '' };
+    changed.breakReminder = br;
+  }
+  if (Object.keys(changed).length) log.info('store.settings.changed', changed);
   data.settings = next;
   flush();
   return data.settings;
@@ -1330,6 +1830,13 @@ module.exports = {
   setGoal,
   getGlobalLimit,
   setGlobalLimit,
+  getTimeBudgetStatus,
+  getVaultStatus,
+  depositToVault,
+  withdrawFromVault,
+  getTodayPlaySeconds,
+  timeRewardMinutesFor,
+  clampLogAmount,
   getStreaks,
   weeklyReport,
   dayOfWeekStats,

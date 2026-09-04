@@ -52,10 +52,12 @@ if (isDev) {
   app.setPath('userData', path.join(app.getPath('appData'), 'screen-time-track-dev'));
 }
 
+const log = require('./log');
 const store = require('./store');
 const { Tracker } = require('./tracker');
 const browserBridge = require('./browserBridge');
 const { BreakReminder } = require('./breakReminder');
+const { TimeBudget } = require('./timeBudget');
 const { TelegramBot } = require('./telegram');
 const taskmgrBlock = require('./taskmgrBlock');
 const { createForestEngine, SPECIES: FOREST_SPECIES, ACHIEVEMENTS: FOREST_ACHIEVEMENTS } = require('./forest');
@@ -66,6 +68,7 @@ let tracker = null;
 let forest = null;
 let forestTicker = null;
 let breakReminder = null;
+let timeBudget = null;
 let telegram = null;
 let lockWin = null;
 let lockRefocus = null;
@@ -77,16 +80,78 @@ const remindersFired = new Set();
 
 const ASSETS = path.join(__dirname, '..', '..', 'assets');
 
+// ---- crash / exit instrumentation -----------------------------------------
+// Anything that kills the process without reaching before-quit leaves the data
+// file exactly as durable as the last fsync. These handlers make the difference
+// between "it just died" and a named cause in the log.
+process.on('uncaughtException', (err) => {
+  log.error('process.uncaughtException', { err: err && err.message, stack: err && err.stack });
+  // Flush, but deliberately do NOT clear running.flag: an uncaught exception
+  // leaves the process in an undefined state, and the next start should say so
+  // rather than reporting a clean exit.
+  try { store.flush(); } catch (e) { /* best effort */ }
+});
+process.on('unhandledRejection', (reason) => {
+  log.error('process.unhandledRejection', {
+    reason: reason && (reason.message || String(reason)),
+    stack: reason && reason.stack,
+  });
+});
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  try {
+    process.on(sig, () => {
+      log.warn('process.signal', { sig, note: 'external kill — flushing before exit' });
+      try { store.flush(); } catch (e) { /* best effort */ }
+      log.sessionEnd(sig);
+      app.quit();
+    });
+  } catch (e) { /* signal not supported on this platform */ }
+}
+process.on('exit', (code) => log.info('process.exit', { code }));
+
 // ---- single instance ------------------------------------------------------
 if (!app.requestSingleInstanceLock()) {
+  log.warn('app.single_instance_lock_lost', {
+    exe: process.execPath, flavor: FLAVOR,
+    note: 'another copy of this flavor is already running — quitting immediately',
+  });
   app.quit();
 } else {
-  app.on('second-instance', () => showWindow());
+  app.on('second-instance', (e, argv) => {
+    log.info('app.second_instance', { argv });
+    showWindow();
+  });
   bootstrap();
 }
 
 function bootstrap() {
   app.whenReady().then(() => {
+    // First line of every run: who we are, and whether the last run died badly.
+    // The previous-run verdict is what identifies a power loss as a power loss
+    // instead of sending the next investigation after a phantom app bug.
+    const unclean = log.sessionStart({
+      flavor: FLAVOR,
+      version: app.getVersion(),
+      electron: process.versions.electron,
+      node: process.versions.node,
+      chrome: process.versions.chrome,
+      exe: process.execPath,
+      argv: process.argv.slice(1).join(' '),
+      userData: app.getPath('userData'),
+      startHidden,
+      wasOpenedAtLogin: app.getLoginItemSettings().wasOpenedAtLogin,
+      uptimeBeforeStartSec: Math.round(require('os').uptime()),
+    });
+    if (unclean) {
+      // os.uptime() near the app's start means the machine itself rebooted, which
+      // separates "Electron crashed" from "the power went out".
+      log.error('app.unclean_previous_run', {
+        systemUptimeSec: Math.round(require('os').uptime()),
+        likelyCause: require('os').uptime() < 600
+          ? 'machine rebooted recently — power loss or forced restart is the prime suspect'
+          : 'machine has been up a while — the app process itself died',
+      });
+    }
     store.load();
     if (store.isReadOnly()) {
       // Existing data on disk we couldn't read. Saving is disabled so we don't
@@ -112,6 +177,7 @@ function bootstrap() {
     startTracker();
     startForest();
     startBreakReminder();
+    startTimeBudget();
     startTelegram();
     startReminderScheduler();
 
@@ -124,7 +190,17 @@ function bootstrap() {
     // keep running in tray; do not quit
   });
 
+  app.on('render-process-gone', (e, wc, details) => {
+    log.error('app.render_process_gone', { reason: details.reason, exitCode: details.exitCode });
+  });
+  app.on('child-process-gone', (e, details) => {
+    log.error('app.child_process_gone', {
+      type: details.type, name: details.name, reason: details.reason, exitCode: details.exitCode,
+    });
+  });
+
   app.on('before-quit', () => {
+    log.info('app.before_quit', { locked, suspended, tracking: store.getSettings().tracking });
     isQuitting = true;
     unregisterInstance();
     if (forestTicker) clearInterval(forestTicker);
@@ -137,6 +213,7 @@ function bootstrap() {
     browserBridge.stop();
     store.flush();
     store.releaseOwnership(); // let the next instance take over immediately
+    log.sessionEnd('before-quit'); // clears running.flag => next start reads "clean"
   });
 }
 
@@ -227,20 +304,42 @@ function refreshTrayMenu() {
 
 // ---- power / idle events --------------------------------------------------
 function setupPowerEvents() {
-  powerMonitor.on('lock-screen', () => { locked = true; });
-  powerMonitor.on('unlock-screen', () => { locked = false; });
-  powerMonitor.on('suspend', () => { suspended = true; });
-  powerMonitor.on('resume', () => { suspended = false; });
+  // Every one of these is a moment the machine might not come back from, so each
+  // one flushes first and is logged. 'shutdown' is the only clean warning Windows
+  // ever gives us that the power is about to go away.
+  powerMonitor.on('lock-screen', () => { locked = true; log.info('power.lock_screen', {}); store.flush(); });
+  powerMonitor.on('unlock-screen', () => { locked = false; log.info('power.unlock_screen', {}); });
+  powerMonitor.on('suspend', () => {
+    suspended = true;
+    log.warn('power.suspend', { note: 'flushing — the machine may not come back' });
+    store.flush();
+  });
+  powerMonitor.on('resume', () => {
+    suspended = false;
+    log.info('power.resume', { systemUptimeSec: Math.round(require('os').uptime()) });
+  });
+  powerMonitor.on('shutdown', () => {
+    log.warn('power.shutdown', { note: 'OS is shutting down — final flush' });
+    store.flush();
+    log.sessionEnd('power-shutdown');
+  });
+  powerMonitor.on('on-battery', () => log.warn('power.on_battery', { note: 'unplugged — an abrupt power loss is now possible' }));
+  powerMonitor.on('on-ac', () => log.info('power.on_ac', {}));
 }
 
 // ---- tracker --------------------------------------------------------------
+// `locked` is the OS lock screen; lockWin is any of our own kiosk locks (break,
+// budget, approve-short) — during either, the only thing on screen is the lock,
+// so nothing may be counted (the lock window itself included).
 function isPaused() {
-  return !store.getSettings().tracking || store.getSettings().notMe || locked || suspended;
+  return !store.getSettings().tracking || store.getSettings().notMe || locked || suspended
+    || !!(lockWin && !lockWin.isDestroyed());
 }
 
 function startBreakReminder() {
   breakReminder = new BreakReminder({
     isDev,
+    logger: log,
     getSettings: () => store.getSettings(),
     getInCall: () => !!(tracker && tracker.inCall),
     powerMonitor,
@@ -249,13 +348,14 @@ function startBreakReminder() {
       // app, show the prompt now; otherwise it appears when they next focus it.
       presentBreakPromptIfRinging();
     },
-    showLock: (state) => showLock(state),
-    updateLock: (state) => updateLock(state),
-    hideLock: () => hideLock(),
+    showLock: (state) => showLock(state, 'break'),
+    updateLock: (state) => updateLock(state, 'break'),
+    hideLock: () => hideLock('break'),
     sendTelegram: (text) => { if (telegram) telegram.sendToAll(text); },
     notify: (title, body) => { try { new Notification({ title, body }).show(); } catch (e) { /* headless */ } },
     persistLock: (state) => store.saveLockState(state),
     clearLock: () => store.clearLockState(),
+    store,
   });
   breakReminder.start();
 
@@ -267,12 +367,26 @@ function startBreakReminder() {
   if (savedLock) breakReminder.resumeLock(savedLock);
 }
 
+function startTimeBudget() {
+  timeBudget = new TimeBudget({
+    isDev,
+    logger: log,
+    getSettings: () => store.getSettings(),
+    store,
+    showLock: (state) => showLock(state, 'budget'),
+    updateLock: (state) => updateLock(state, 'budget'),
+    hideLock: () => hideLock('budget'),
+    notify: (title, body) => { try { new Notification({ title, body }).show(); } catch (e) { /* headless */ } },
+  });
+}
+
 function telegramEnabled() {
   return !!((store.getSettings().breakReminder || {}).telegram || {}).enabled;
 }
 
 function startTelegram() {
   telegram = new TelegramBot({
+    logger: log,
     getConfig: () => (store.getSettings().breakReminder || {}).telegram || {},
     onMessage: (msg) => {
       // The bot keeps polling whenever a token is set, but it only exerts power
@@ -355,9 +469,24 @@ function unregisterLockShortcuts() {
   }
 }
 
-function showLock(state) {
+// One kiosk window, two systems that can lock it: the break reminder and the
+// time budget. Without an owner they both push their own state into it, so a
+// break lock ends up rendering "screen time is up" (and vice versa). The break
+// wins — it has a real countdown that must not be hijacked mid-break — and the
+// loser keeps its own locked state, taking the window over when the break lifts.
+let lockOwner = null; // 'break' | 'budget'
+
+function ownerLockState(sys) {
+  if (sys === 'break') return breakReminder && breakReminder.getStatus().isLocked ? breakReminder.getLockState() : null;
+  if (sys === 'budget') return timeBudget && timeBudget.isLocked() ? timeBudget.getLockState() : null;
+  return null;
+}
+
+function showLock(state, sys = 'break') {
+  if (lockOwner && lockOwner !== sys && lockOwner === 'break' && ownerLockState('break')) return; // break outranks budget
   taskmgrBlock.block();
-  if (lockWin && !lockWin.isDestroyed()) { updateLock(state); return; }
+  lockOwner = sys;
+  if (lockWin && !lockWin.isDestroyed()) { updateLock(state, sys); return; }
   lockWin = new BrowserWindow({
     fullscreen: true,
     kiosk: true,
@@ -383,7 +512,8 @@ function showLock(state) {
 
   // Refuse to close while a lock is actually in force.
   lockWin.on('close', (e) => {
-    if (breakReminder && breakReminder.getStatus().isLocked) e.preventDefault();
+    const stillLocked = (breakReminder && breakReminder.getStatus().isLocked) || (timeBudget && timeBudget.isLocked());
+    if (stillLocked) e.preventDefault();
   });
 
   // Swallow modifier-driven escapes inside the window itself.
@@ -404,11 +534,27 @@ function showLock(state) {
   }, 700);
 }
 
-function updateLock(state) {
+function updateLock(state, sys = 'break') {
+  // The other system owns the screen — unless it isn't actually locked anymore,
+  // in which case a stale owner must not freeze the screen on dead state.
+  if (lockOwner && lockOwner !== sys) {
+    if (ownerLockState(lockOwner)) return;
+    lockOwner = sys;
+  }
   if (lockWin && !lockWin.isDestroyed()) lockWin.webContents.send('lock:tick', state);
 }
 
-function hideLock() {
+function hideLock(sys = null) {
+  // Only the owner can take the window down, and only if nothing else is still
+  // locked — otherwise hand the screen over to whoever is.
+  if (sys && lockOwner && lockOwner !== sys) return;
+  const other = ownerLockState(sys === 'break' ? 'budget' : 'break');
+  if (sys && other) {
+    lockOwner = sys === 'break' ? 'budget' : 'break';
+    updateLock(other, lockOwner);
+    return;
+  }
+  lockOwner = null;
   taskmgrBlock.unblock();
   unregisterLockShortcuts();
   if (lockRefocus) { clearInterval(lockRefocus); lockRefocus = null; }
@@ -429,7 +575,11 @@ function startTracker() {
     getBrowserState: () => browserBridge.getState(),
     onTick: (payload) => {
       if (forest && payload && payload.currentApp) forest.onForegroundApp(payload.currentApp);
-      if (win && !win.isDestroyed()) win.webContents.send('tick', payload);
+      if (timeBudget) timeBudget.check();
+      // budget rides along so the dashboard hero can show play-time / max + bonus live
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('tick', { ...payload, budget: store.getTimeBudgetStatus(), studySeconds: store.getToday().study || 0 });
+      }
     }
   });
   tracker.start();
@@ -473,7 +623,7 @@ function applyAutoLaunch(enabled) {
     }
     app.setLoginItemSettings(opts);
   } catch (e) {
-    console.error('[main] auto-launch failed:', e.message);
+    log.error('app.auto_launch_failed', { err: e.message });
   }
 }
 
@@ -617,14 +767,48 @@ function setupIpc() {
     return telegram.sendToAll('✅ Screen Time test message — you are set up to receive alerts.');
   });
 
-  ipcMain.handle('lock:getState', () => breakReminder ? breakReminder.getLockState() : { locked: false });
+  ipcMain.handle('lock:getState', () => {
+    if (breakReminder && breakReminder.getStatus().isLocked) return breakReminder.getLockState();
+    if (timeBudget && timeBudget.isLocked()) return timeBudget.getLockState();
+    return { locked: false };
+  });
   ipcMain.handle('lock:approve', (_e, reason) => breakReminder ? breakReminder.approveFromLock(reason) : { locked: false });
-  ipcMain.handle('lock:release', () => breakReminder ? breakReminder.release() : { locked: false });
+  ipcMain.handle('lock:release', () => {
+    if (breakReminder && breakReminder.getStatus().isLocked) return breakReminder.release();
+    if (timeBudget && timeBudget.isLocked()) return timeBudget.release();
+    return { locked: false };
+  });
+  // "It's urgent" — unlocks whatever is holding the screen and tells the
+  // watchers, so the escape hatch costs social capital instead of being silent.
+  ipcMain.handle('lock:urgent', (_e, reason) => {
+    const what = breakReminder && breakReminder.getStatus().isLocked ? 'הפסקה'
+      : timeBudget && timeBudget.isLocked() ? 'נגמר זמן המסך' : 'נעילה';
+    const text = `🚨 שחרור חירום מנעילת "${what}"\nסיבה: ${String(reason || '').slice(0, 200) || '(לא נכתבה)'}`;
+    if (telegram) telegram.sendToAll(text).catch(() => {});
+    log.warn('lock.urgent_release', { what, reason: String(reason || '').slice(0, 200) });
+    if (breakReminder && breakReminder.getStatus().isLocked) breakReminder.urgentRelease();
+    if (timeBudget && timeBudget.isLocked()) timeBudget.urgentRelease();
+    return { locked: false };
+  });
+
+  ipcMain.handle('lock:logHabitForTime', (_e, habitId, amount) => {
+    if (breakReminder && breakReminder.getStatus().isLocked) return breakReminder.logHabitForTime(habitId, amount);
+    if (timeBudget && timeBudget.isLocked()) return timeBudget.logHabitAndCheck(habitId, amount);
+    return { locked: false };
+  });
+  ipcMain.handle('lock:vaultWithdraw', (_e, seconds) => {
+    if (timeBudget && timeBudget.isLocked()) return timeBudget.withdrawFromVaultAndCheck(seconds);
+    return { locked: false };
+  });
 
   ipcMain.handle('goals:get', () => store.getGoals());
   ipcMain.handle('goals:set', (_e, appName, targetSec) => store.setGoal(appName, targetSec));
   ipcMain.handle('limit:getGlobal', () => store.getGlobalLimit());
   ipcMain.handle('limit:setGlobal', (_e, seconds) => store.setGlobalLimit(seconds));
+  ipcMain.handle('timeBudget:getStatus', () => store.getTimeBudgetStatus());
+  ipcMain.handle('vault:getStatus', () => store.getVaultStatus());
+  ipcMain.handle('vault:deposit', (_e, seconds) => store.depositToVault(seconds));
+  ipcMain.handle('vault:withdraw', (_e, seconds) => store.withdrawFromVault(seconds));
   ipcMain.handle('streaks:get', () => store.getStreaks());
   ipcMain.handle('weekly:get', () => store.weeklyReport());
   ipcMain.handle('tracking:set', (_e, on) => { setTracking(on); return store.getSettings().tracking; });

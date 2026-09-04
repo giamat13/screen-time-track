@@ -148,6 +148,12 @@ h3 { font-size: 15px; margin: 0; font-weight: 600; }
 .hero-time { font-size: 46px; font-weight: 700; color: #fff; line-height: 1; }
 .hero-time small { font-size: 20px; font-weight: 500; opacity: .8; margin: 0 8px 0 2px; }
 .hero.idle .hero-time, .hero.paused .hero-time { opacity: .55; }
+.hero-budget { margin-top: 8px; font-size: 24px; font-weight: 700; color: rgba(255,255,255,.85); }
+.hero-budget .bonus { color: #8ef5c0; }
+.hero-budget .roll { color: #ffe08a; }
+.hero-budget.over { color: #ffd4d4; }
+.hero-study-line { margin-top: 8px; font-size: 14px; font-weight: 600; color: rgba(255,255,255,.85); }
+.hero-study-line .muted { font-weight: 400; opacity: .65; }
 .hero-current { display: inline-flex; align-items: center; gap: 7px; margin-top: 16px; background: rgba(255,255,255,.16); color: #fff; padding: 7px 12px; border-radius: 8px; font-size: 13px; }
 .call-badge { background: rgba(245,166,35,.25); padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; }
 .hero-idle-banner {
@@ -517,6 +523,7 @@ input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 3
 .hh-cell .hh-tip { display: none; }
 .freeze-tag { font-size: 12px; font-weight: 600; color: #60a5fa; }
 .freeze-tag.empty { color: var(--muted-2); }
+.reward-tag { font-size: 12px; font-weight: 600; color: #34d399; }
 .paused-tag { font-size: 12px; font-weight: 600; color: var(--muted-2); }
 .hab-icon-btn.active { color: var(--amber); border-color: var(--amber); }
 .habit-card.paused { opacity: 0.8; }

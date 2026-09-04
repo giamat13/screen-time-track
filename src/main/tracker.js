@@ -5,6 +5,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
 const { powerMonitor } = require('electron');
+const log = require('./log');
 
 const NAME_MAP = {
   chrome: 'Google Chrome',
@@ -155,14 +156,28 @@ class Tracker {
     try {
       this.proc = spawn('powershell.exe', args, { windowsHide: true });
     } catch (e) {
-      console.error('[tracker] failed to spawn watcher:', e.message);
+      log.error('tracker.spawn_failed', { err: e.message, script: scriptPath(), interval });
       return;
     }
+    this._spawnedAt = Date.now();
+    this._spawns = (this._spawns || 0) + 1;
+    log.info('tracker.spawned', { pid: this.proc.pid, interval, script: scriptPath(), spawnCount: this._spawns });
+
     const rl = readline.createInterface({ input: this.proc.stdout });
     rl.on('line', (line) => this._onLine(line));
-    this.proc.stderr.on('data', () => {});
-    this.proc.on('exit', () => {
+    // PowerShell only writes here when something is actually wrong; silence used to
+    // hide watcher errors completely (a dead watcher looks exactly like idle time).
+    this.proc.stderr.on('data', (d) => {
+      const msg = String(d).trim();
+      if (msg) log.error('tracker.watcher_stderr', { msg: msg.slice(0, 400) });
+    });
+    this.proc.on('exit', (code, signal) => {
+      const aliveMs = Date.now() - this._spawnedAt;
       this.proc = null;
+      log.warn('tracker.watcher_exited', {
+        code, signal, aliveMs, stopping: this._stopping,
+        note: aliveMs < 5000 ? 'died almost immediately — restart loop likely, expect no tracking' : 'auto-restarting in 2s',
+      });
       if (!this._stopping) setTimeout(() => this._spawn(), 2000); // auto-restart
     });
   }
@@ -225,7 +240,20 @@ class Tracker {
     if (this.lastTs) {
       delta = (now - this.lastTs) / 1000;
       const cap = (settings.pollInterval || 2) * 3;
-      if (delta < 0) delta = 0;
+      // A gap far larger than the poll interval means nothing was sampling: sleep,
+      // hibernate, a frozen main process, or a stalled watcher. Whatever killed the
+      // machine last time went through a gap like this first, so record it.
+      if (delta > Math.max(cap, 30)) {
+        log.warn('tracker.time_gap', {
+          gapSec: Math.round(delta), cappedTo: settings.pollInterval || 2,
+          since: new Date(this.lastTs).toISOString(),
+          note: 'no samples for this long — sleep, hibernate, or a stalled watcher',
+        });
+      }
+      if (delta < 0) {
+        log.warn('tracker.clock_went_backwards', { deltaSec: delta, note: 'system clock or DST change' });
+        delta = 0;
+      }
       if (delta > cap) delta = settings.pollInterval || 2;
     }
     this.lastTs = now;
@@ -277,10 +305,21 @@ class Tracker {
       if (rec.ts > idleStart) { toRevert.push(rec); return false; }
       return true;
     });
+    let reverted = 0;
     for (const rec of toRevert) {
       this.store.subtractTime(rec.day, rec.appName, rec.delta, rec.hour, rec.isStudy);
       this.session.appSecs[rec.appName] = Math.max(0, (this.session.appSecs[rec.appName] || 0) - rec.delta);
       this.session.seconds = Math.max(0, this.session.seconds - rec.delta);
+      reverted += rec.delta;
+    }
+    // The only code path that *removes* recorded time during normal operation. If
+    // today's total ever drops unexpectedly, this is the first thing to rule out.
+    if (reverted > 0) {
+      log.info('tracker.idle_reverted', {
+        seconds: Math.round(reverted), ticks: toRevert.length,
+        idleSecs: Math.round(idleSecs),
+        apps: [...new Set(toRevert.map((r) => r.appName))].join(','),
+      });
     }
   }
 
@@ -302,8 +341,9 @@ class Tracker {
 
   stop() {
     this._stopping = true;
+    log.info('tracker.stop', { session: this.getSessionInfo(), watcherPid: this.proc && this.proc.pid });
     if (this.proc) {
-      try { this.proc.kill(); } catch {}
+      try { this.proc.kill(); } catch (e) { log.warn('tracker.kill_failed', { err: e.message }); }
       this.proc = null;
     }
   }

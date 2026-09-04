@@ -39,8 +39,8 @@
     <h1 id="title">זמן להפסקה</h1>
     <p class="sub" id="sub">קום, מתח את הגוף, ותן לעיניים לנוח. אי אפשר לצאת עד שהזמן נגמר.</p>
     <div class="count" id="count">05:00</div>
-    <div class="count-lbl">זמן שנותר</div>
-    <div class="bar"><i id="bar"></i></div>
+    <div class="count-lbl" id="count-lbl">זמן שנותר</div>
+    <div class="bar" id="bar-wrap"><i id="bar"></i></div>
     <div class="actions">
       <button class="btn approve hidden" id="approve">✋ אישרו לי להמשיך לשחק</button>
       <div class="hint hidden" id="approve-hint"></div>
@@ -48,6 +48,25 @@
         <input type="text" class="reason-input" id="approve-reason-input" placeholder="למה צריך עוד זמן? (חובה)" maxlength="200" />
         <button class="btn approve" id="approve-reason-send">שלח בקשה למשגיחים</button>
         <button class="btn" id="approve-reason-back" style="min-width:200px;padding:10px 20px;font-size:13px;">חזרה</button>
+      </div>
+      <div class="hidden" id="budget-habits-panel" style="display:flex; flex-direction:column; gap:10px; align-items:center;">
+        <p class="hint" id="budget-hint" style="margin-top:0;"></p>
+        <div id="budget-habit-list" style="display:flex; flex-direction:column; gap:8px; width:340px;"></div>
+      </div>
+      <div class="hidden" id="vault-panel" style="display:flex; flex-direction:column; gap:10px; align-items:center;">
+        <p class="hint" id="vault-hint" style="margin-top:0;"></p>
+        <div style="display:flex; gap:8px; align-items:center; width:340px;">
+          <input type="number" class="reason-input habit-amt" id="vault-withdraw-amt" min="1" step="any" placeholder="דק'" style="width:100px; padding:10px; text-align:center;" />
+          <button class="btn approve" id="vault-withdraw-btn" style="flex:1; min-width:0;">&#128176; משוך מהכספת</button>
+        </div>
+      </div>
+      <!-- Always-available escape valve: unlocks now, and tells the watchers it happened. -->
+      <button class="btn" id="urgent" style="min-width:200px;padding:10px 20px;font-size:13px;opacity:.75;">🚨 זה דחוף — שחרר עכשיו</button>
+      <div class="hidden" id="urgent-panel" style="display:flex; flex-direction:column; gap:10px; align-items:center;">
+        <p class="hint" style="margin-top:0;">המשגיחים יקבלו הודעה מיידית שהשתחררת ולמה.</p>
+        <input type="text" class="reason-input" id="urgent-reason-input" placeholder="מה דחוף? (חובה)" maxlength="200" />
+        <button class="btn approve" id="urgent-send">שחרר ושלח למשגיחים</button>
+        <button class="btn" id="urgent-back" style="min-width:200px;padding:10px 20px;font-size:13px;">חזרה</button>
       </div>
       <button class="btn release hidden" id="release">🔓 שחרר את המחשב</button>
     </div>

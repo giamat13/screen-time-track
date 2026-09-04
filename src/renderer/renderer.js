@@ -133,6 +133,8 @@ function applyStudyUI(on) {
   if (btn) btn.classList.toggle('active', studyOn);
   const cb = $('#set-studymode');
   if (cb) cb.checked = studyOn;
+  const brkCb = $('#brk-study-mode');
+  if (brkCb) brkCb.checked = studyOn;
 }
 
 async function toggleStudyMode(on) {
@@ -144,6 +146,7 @@ async function toggleStudyMode(on) {
 }
 
 $('#hero-study').addEventListener('click', () => toggleStudyMode(!studyOn));
+$('#brk-study-mode').addEventListener('change', (e) => toggleStudyMode(e.target.checked));
 
 function applyNotMeUI(on) {
   notMeOn = !!on;
@@ -198,8 +201,13 @@ async function loadDashboard() {
   applyNavState('dashboard', dashOffset, dashRange, d);
 
   const viewing = dashOffset === 0 ? '' : ` · ${fmtRangeLabel(dashRange, dashOffset, d)}`;
-  $('#hero-label').textContent = (dashRange === 'Today' ? "Today's Screen Time" : `Screen Time (${labelFor(dashRange)})`) + viewing;
-  $('#hero-time').innerHTML = fmtLong(d.total);
+  const live = dashRange === 'Today' && dashOffset === 0 && dashFilter !== 'study';
+  const budget = live ? await api.getTimeBudgetStatus() : null;
+  const what = dashFilter === 'study' ? 'Study Time' : `Screen Time${budget ? ' (study not counted)' : ''}`;
+  $('#hero-label').textContent = (dashRange === 'Today' ? `Today's ${what}` : `${what} (${labelFor(dashRange)})`) + viewing;
+  $('#hero-time').innerHTML = fmtLong(budget ? budget.usedSeconds : d.total);
+  renderHeroBudget(budget);
+  setHeroStudy(d.studyTotal);
 
   $('#s-apps').textContent = d.appsUsed;
   $('#s-most').textContent = d.mostUsed;
@@ -227,6 +235,30 @@ async function loadDashboard() {
   applyTrackingUI(st.tracking, st.paused);
 }
 function labelFor(r) { return r === 'Today' ? 'Today' : `${r} Days`; }
+
+// "/ 2h 0m + 30m" under the hero clock: max allowance (start + rollover) and the
+// bonus earned from habits today. Hidden when the time-budget lock is off.
+function renderHeroBudget(b) {
+  const el = $('#hero-budget');
+  el.classList.toggle('hidden', !b || !b.enabled);
+  if (!b || !b.enabled) return;
+  el.classList.toggle('over', b.usedSeconds > b.budgetSeconds);
+  // Each source stays its own term: the "/" is exactly the limit you set, so
+  // changing it visibly moves the number instead of hiding inside a lump sum.
+  el.innerHTML = `/ ${fmtShort(b.startSeconds)}`
+    + ` <span class="bonus" title="Earned from habits today">+ ${fmtShort(b.earnedSeconds)} 🌱</span>`
+    + (b.rolloverSeconds > 0 ? ` <span class="roll" title="Unused time rolled over from yesterday">+ ${fmtShort(b.rolloverSeconds)} ↩</span>` : '');
+  el.title = `${fmtShort(b.budgetSeconds)} total today — ${fmtShort(Math.max(0, b.budgetSeconds - b.usedSeconds))} left`;
+}
+
+// Study time is excluded from the hero clock and the budget, so show it on its
+// own line. Hidden when there's none, or when the filter already makes the big
+// number the study total.
+function setHeroStudy(sec) {
+  const show = dashFilter !== 'study' && sec > 0;
+  $('#hero-study-line').classList.toggle('hidden', !show);
+  if (show) $('#hero-study-time').textContent = fmtShort(sec);
+}
 
 function renderDonut(dist, total) {
   const svg = $('#donut');
@@ -755,6 +787,8 @@ async function loadGoals() {
   goalsData = goals;
   globalLimit = gLimit || 0;
   renderGlobalLimit(dash);
+  renderTimeBudget();
+  renderVault();
   renderStreak(streaks);
   renderStreakGoals(goals, dash, gLimit);
   renderStreakHabits(habits);
@@ -830,6 +864,31 @@ function renderGlobalLimit(dash) {
   $('#global-limit-val').textContent = fmtShort(mins * 60);
   const used = dash ? ((dash.total || 0) - (dash.studyTotal || 0)) : 0; // study excluded from the limit
   $('#global-limit-status').textContent = on ? `Today: ${fmt(used)} / ${fmtShort(globalLimit)}` : 'Off';
+}
+
+// Enable/enforce toggle for the same daily limit set by renderGlobalLimit above;
+// both live in the Daily Limits card now.
+async function renderTimeBudget() {
+  const status = await api.getTimeBudgetStatus();
+  $('#time-budget-on').checked = status.enabled;
+  $('#time-budget-rollover').checked = status.rollover;
+  // The allowance is the daily limit from the card above — one number, two uses.
+  $('#time-budget-limit-lbl').textContent = status.startSeconds > 0 ? fmtShort(status.startSeconds) : 'not set';
+  const bonusBits = [];
+  if (status.earnedSeconds > 0) bonusBits.push(`+${Math.round(status.earnedSeconds / 60)}m from habits`);
+  if (status.rolloverSeconds > 0) bonusBits.push(`+${Math.round(status.rolloverSeconds / 60)}m rolled over`);
+  $('#time-budget-status').textContent = status.enabled
+    ? `Today: ${fmt(status.usedSeconds)} / ${fmtShort(status.budgetSeconds)}${bonusBits.length ? ` (${bonusBits.join(', ')})` : ''}`
+    : (status.startSeconds > 0 ? 'Off' : 'Set a daily limit above to use the lock');
+}
+
+async function saveTimeBudget() {
+  const on = $('#time-budget-on').checked;
+  const rollover = $('#time-budget-rollover').checked;
+  await api.setSettings({ timeBudget: { enabled: on, rollover } });
+  await renderTimeBudget();
+  const mins = Math.round(globalLimit / 60);
+  toast(on ? (globalLimit > 0 ? `Lock at ${mins}m/day` : 'Set a daily limit first') : 'Lock disabled');
 }
 
 function renderStreak(streaks) {
@@ -981,7 +1040,8 @@ async function saveGlobalLimit() {
   const [streaks, dash] = await Promise.all([api.getStreaks(), api.getDashboard('Today')]);
   renderGlobalLimit(dash);
   renderStreak(streaks);
-  toast(on ? `Total limit: up to ${fmtShort(globalLimit)}/day` : 'Total limit removed');
+  await renderTimeBudget(); // same number drives the lock — keep that card honest
+  toast(on ? `Daily limit: up to ${fmtShort(globalLimit)}/day` : 'Daily limit removed');
 }
 
 $('#global-limit-on').addEventListener('change', () => {
@@ -994,6 +1054,57 @@ $('#global-limit-pick').addEventListener('input', () => {
 });
 $('#global-limit-pick').addEventListener('change', () => {
   if ($('#global-limit-on').checked) saveGlobalLimit();
+});
+
+// ---- time-budget lock: enforcement on/off for the daily limit set above ----
+$('#time-budget-on').addEventListener('change', () => saveTimeBudget());
+$('#time-budget-rollover').addEventListener('change', () => {
+  if ($('#time-budget-on').checked) saveTimeBudget();
+});
+
+// ---- vault: sweeps unused budget into long-term savings that grow weekly ----
+async function renderVault() {
+  const status = await api.getVaultStatus();
+  $('#vault-on').checked = status.enabled;
+  $('#vault-sweep-pct').value = status.sweepPercent;
+  $('#vault-growth-pct').value = status.weeklyGrowthPercent;
+  $('#vault-balance').textContent = fmtShort(status.seconds);
+}
+
+async function saveVaultSettings() {
+  await api.setSettings({
+    vault: {
+      enabled: $('#vault-on').checked,
+      sweepPercent: parseInt($('#vault-sweep-pct').value, 10) || 0,
+      weeklyGrowthPercent: parseInt($('#vault-growth-pct').value, 10) || 0,
+    }
+  });
+  await renderVault();
+  toast('Vault settings saved');
+}
+
+$('#vault-on').addEventListener('change', saveVaultSettings);
+$('#vault-sweep-pct').addEventListener('change', saveVaultSettings);
+$('#vault-growth-pct').addEventListener('change', saveVaultSettings);
+
+$('#vault-deposit-btn').addEventListener('click', async () => {
+  const mins = parseFloat($('#vault-deposit-amt').value);
+  if (!(mins > 0)) return;
+  await api.depositToVault(Math.round(mins * 60));
+  $('#vault-deposit-amt').value = '';
+  await renderVault();
+  await renderTimeBudget();
+  toast('Moved to vault');
+});
+
+$('#vault-withdraw-btn').addEventListener('click', async () => {
+  const mins = parseFloat($('#vault-withdraw-amt').value);
+  if (!(mins > 0)) return;
+  await api.withdrawFromVault(Math.round(mins * 60));
+  $('#vault-withdraw-amt').value = '';
+  await renderVault();
+  await renderTimeBudget();
+  toast('Withdrawn from vault');
 });
 
 $('#goals-time-pick').addEventListener('input', () => {
@@ -1178,7 +1289,6 @@ function habitCard(h) {
   const peak = (h.peakHour >= 0 && h.entryCount >= 3)
     ? `<span class="hab-peak" title="When you usually log this">🕐 usually ${pad2(h.peakHour)}:00</span>` : '';
   const defAmt = h.unit === 'minutes' ? Math.min(h.target, 30) : 1;
-  const stepAttr = h.unit === 'minutes' ? 5 : 1;
   const hlpUnit = h.unit === 'minutes' ? 'min' : h.unit === 'custom' ? customUnitLabel(h) : '×';
 
   const pausePeriodWord = h.freqType === 'weekly' ? 'week' : 'day';
@@ -1207,8 +1317,9 @@ function habitCard(h) {
           <span class="freq-tag">${freqLabel(h)}</span>
           <span class="${streakCls}"><span class="fl">🔥</span> ${h.streak} ${periodWord} streak</span>
           <span class="subtle small">· best ${h.bestStreak}</span>
-          <span class="freeze-tag${h.freezers === 0 ? ' empty' : ''}" title="${h.freezers} freeze ${h.freqType === 'weekly' ? 'week' : 'day'}${h.freezers !== 1 ? 's' : ''} available">🧊 ${h.freezers}</span>
-          ${h.paused ? `<span class="paused-tag" title="Paused — won't count against your streak">⏸ paused${h.pausedPeriodsLeft > 1 ? ` · ${h.pausedPeriodsLeft} ${pausePeriodWord}s left` : ''}</span>` : ''}
+          <span class="freeze-tag${h.freezers === 0 ? ' empty' : ''}" title="${h.freezers} freeze ${h.freqType === 'weekly' ? 'week' : 'day'}${h.freezers !== 1 ? 's' : ''} available — hit double your target in one ${h.freqType === 'weekly' ? 'week' : 'day'} to earn another">🧊 ${h.freezers}</span>
+          ${h.timeReward > 0 ? `<span class="reward-tag" title="Logging this adds ${h.timeReward} min of screen time when the time-budget lock is on">⏱ +${h.timeReward}m</span>` : ''}
+          ${h.paused ? `<span class="paused-tag" title="Paused — won't count against your streak">⏸ ${h.pausedForever ? 'paused indefinitely' : `paused${h.pausedPeriodsLeft > 1 ? ` · ${h.pausedPeriodsLeft} ${pausePeriodWord}s left` : ''}`}</span>` : ''}
           ${peak}
         </div>
         <div class="xp-bar"><div class="xp-fill" data-w="${xpPct}"></div></div>
@@ -1227,7 +1338,7 @@ function habitCard(h) {
     <div class="hab-log-panel hidden">
       <div class="hlp-row">
         <label class="hlp-lbl">Amount</label>
-        <input type="number" class="hlp-amt" min="1" step="${stepAttr}" value="${defAmt}" />
+        <input type="number" class="hlp-amt" min="0" step="any" value="${defAmt}" title="Decimals allowed — 0.25, 0.5, 1.5 …" />
         <span class="hlp-unit">${hlpUnit}</span>
       </div>
       <div class="hlp-row">
@@ -1272,7 +1383,7 @@ function wireLogPanel(card, h) {
   });
   card.querySelector('.hlp-cancel').addEventListener('click', () => panel.classList.add('hidden'));
   card.querySelector('.hlp-add').addEventListener('click', () => {
-    const amount = parseInt(card.querySelector('.hlp-amt').value, 10);
+    const amount = parseFloat(String(card.querySelector('.hlp-amt').value).replace(',', '.'));
     if (!amount || amount <= 0) { toast('Enter an amount', true); return; }
     const date = dateEl.value;
     if (!date) { toast('Pick a day', true); return; }
@@ -1323,7 +1434,7 @@ async function doPauseHabit(id, periods = 1) {
   const updated = await api.pauseHabit(id, periods);
   if (!updated) return;
   toast(updated.paused
-    ? (periods > 1 ? `Paused for ${periods} — streak protected` : 'Paused — streak protected')
+    ? (periods === 'forever' ? 'Paused forever — streak protected' : periods > 1 ? `Paused for ${periods} — streak protected` : 'Paused — streak protected')
     : 'Resumed');
   loadHabits();
 }
@@ -1335,6 +1446,7 @@ function openHabitPauseModal(id, weekly) {
   $('#habpause-sub').textContent =
     `Paused ${word} don't count against your streak. You can resume any time.`;
   $$('#habpause-choices .modal-btn').forEach((b) => {
+    if (b.dataset.periods === 'forever') return; // keeps its own label ("Forever"), not a period count
     b.textContent = `${b.dataset.periods} ${b.dataset.periods === '1' ? word.slice(0, -1) : word}`;
   });
   $('#habpause-modal').dataset.habitId = id;
@@ -1347,7 +1459,8 @@ $('#habpause-cancel-btn').addEventListener('click', closeHabitPauseModal);
 $$('#habpause-choices .modal-btn').forEach((b) => b.addEventListener('click', () => {
   const id = $('#habpause-modal').dataset.habitId;
   closeHabitPauseModal();
-  doPauseHabit(id, Number(b.dataset.periods));
+  const p = b.dataset.periods;
+  doPauseHabit(id, p === 'forever' ? 'forever' : Number(p));
 }));
 
 async function deleteHabitConfirmed(id) {
@@ -1454,6 +1567,7 @@ function openHabitForm(habit) {
   $('#hab-custom-unit').value = habForm.customUnit;
   applyUnitToSlider();
   $('#hab-target').value = habit ? habit.target : (habForm.unit === 'minutes' ? 30 : 1);
+  $('#hab-time-reward').value = habit ? (habit.timeReward || 0) : 0;
   syncHabitForm();
   $('#hab-form').classList.remove('hidden');
   $('#hab-name').focus();
@@ -1485,7 +1599,8 @@ $('#hab-save').addEventListener('click', async () => {
     freqType: habForm.freq,
     unit: habForm.unit,
     customUnit: habForm.unit === 'custom' ? habForm.customUnit.trim() : undefined,
-    target: parseInt($('#hab-target').value, 10)
+    target: parseInt($('#hab-target').value, 10),
+    timeReward: parseInt($('#hab-time-reward').value, 10) || 0
   };
   if (editingHabitId) { await api.updateHabit(editingHabitId, payload); toast('Habit updated'); }
   else { await api.addHabit(payload); toast('Habit created 🌱'); }
@@ -1498,7 +1613,10 @@ $('#hab-save').addEventListener('click', async () => {
 api.onTick((p) => {
   // keep the hero counter & current app fresh without a full reload
   if (!$('#page-dashboard').classList.contains('hidden') && dashRange === 'Today' && dashOffset === 0) {
-    $('#hero-time').innerHTML = fmtLong(p.todaySeconds);
+    const budget = dashFilter !== 'study' ? p.budget : null;
+    $('#hero-time').innerHTML = fmtLong(budget ? budget.usedSeconds : p.todaySeconds);
+    renderHeroBudget(budget);
+    setHeroStudy(p.studySeconds || 0);
   }
   $('#hero-current-app').textContent = p.currentApp || '—';
   $('#hero-call-badge').classList.toggle('hidden', !p.inCall);

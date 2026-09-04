@@ -6,6 +6,7 @@
   "scripts": {
     "postinstall": "node scripts/make-assets.js",
     "assets": "node scripts/make-assets.js",
+    "test": "node test/store-durability.test.js && node test/store-no-wipe.test.js && node test/habit-pause.test.js && node test/habit-fraction.test.js && node test/budget-rollover.test.js && node test/habit-freezer-bonus.test.js && node test/study-mode-locks.test.js && node test/telegram-resolve.test.js",
     "start": "electron .",
     "dev": "electron . --dev",
     "dist": "electron-builder --win"
