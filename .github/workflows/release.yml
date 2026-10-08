@@ -1,5 +1,5 @@
 name: release
-# Push a tag like v1.0.0 (it must equal package.json "version") to build ScreenTime-Setup-<version>.exe and attach it to a GitHub release.
+# Push a tag like v1.1.0 (it must equal package.json "version") to build ScreenTime-Setup-<version>.exe and attach it to a GitHub release.
 on:
   push:
     tags: ["v*"]
