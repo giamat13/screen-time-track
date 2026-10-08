@@ -1,5 +1,5 @@
 name: release
-# Push a tag like v1.1.0 (it must equal package.json "version") to build ScreenTime-Setup-<version>.exe and attach it to a GitHub release.
+# Push a tag like v1.1.1 (it must equal package.json "version") to build ScreenTime-Setup-<version>.exe and attach it to a GitHub release.
 on:
   push:
     tags: ["v*"]
@@ -29,7 +29,7 @@ jobs:
           fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
           echo "TAG=v$v" >> "$GITHUB_ENV"
-      - run: npm run dist
+      - run: npx electron-builder --win --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
       - name: Publish the release
