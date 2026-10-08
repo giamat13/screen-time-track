@@ -68,6 +68,7 @@ function defaults() {
       minimizeToTray: true,
       studyMode: false, // when on, time is still tracked but excluded from daily limits
       notMe: false, // when on, someone else is at the computer — nothing is tracked at all
+      activityWatch: { enabled: true, url: 'http://127.0.0.1:5600', lastSync: null }, // read-only import, see activityWatch.js
       browserDetail: true, // relabel browser time to the real site via the extension
       countMediaWhenIdle: true, // keep counting while a video/track is playing
       mediaIdleCap: 600, // after this many idle seconds, stop counting media (you left)
@@ -621,6 +622,45 @@ function addTime(appName, seconds, isStudy = false) {
   }
   day.lastSeen = new Date().toISOString();
   scheduleSave();
+}
+
+// Fill one *past* hour from an external source (ActivityWatch). Only fills an hour
+// Screen Time recorded nothing for, so re-imports and overlap can't double-count.
+// Writes a bare day record if the day is missing — deliberately not ensureDay(),
+// whose rollover/vault bookkeeping must only run for the real "today".
+// `apps`: Map<appName, seconds>. Returns seconds added (0 if skipped).
+function importHour(hourDate, apps) {
+  const key = dateKey(hourDate);
+  if (key === dateKey() && hourDate.getHours() >= new Date().getHours()) return 0;
+  // "Not Me" sessions: someone else was at the computer, so it wasn't the user's time.
+  const hs = hourDate.getTime(), he = hs + 3600e3;
+  if ((data.otherUsers || []).some((s) => {
+    const a = Date.parse(s.startedAt), b = s.endedAt ? Date.parse(s.endedAt) : Date.now();
+    return a < he && b > hs;
+  })) return 0;
+  let day = data.days[key];
+  if (!day) {
+    const iso = hourDate.toISOString();
+    day = data.days[key] = {
+      apps: {}, total: 0, firstSeen: iso, lastSeen: iso, hours: new Array(24).fill(0), studyApps: {}, study: 0,
+      vaultDeposited: 0, vaultWithdrawn: 0,
+    };
+  }
+  if (!Array.isArray(day.hours)) day.hours = new Array(24).fill(0);
+  const h = hourDate.getHours();
+  if (day.hours[h] > 0) return 0;
+  let added = 0;
+  for (const [name, sec] of apps) {
+    const s = Math.round(sec);
+    if (s <= 0) continue;
+    day.apps[name] = (day.apps[name] || 0) + s;
+    added += s;
+  }
+  if (added <= 0) return 0;
+  day.total += added;
+  day.hours[h] += added;
+  scheduleSave();
+  return added;
 }
 
 // Undo up to `seconds` previously added by addTime for a specific past day/hour —
@@ -1816,6 +1856,7 @@ module.exports = {
   clearLockState,
   dateKey,
   addTime,
+  importHour,
   subtractTime,
   debugSubtractToday,
   startOtherUser,

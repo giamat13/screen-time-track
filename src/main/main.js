@@ -57,6 +57,7 @@ const store = require('./store');
 const { Tracker } = require('./tracker');
 const browserBridge = require('./browserBridge');
 const localApi = require('./localApi');
+const activityWatch = require('./activityWatch');
 const { BreakReminder } = require('./breakReminder');
 const { TimeBudget } = require('./timeBudget');
 const { TelegramBot } = require('./telegram');
@@ -198,6 +199,7 @@ function bootstrap() {
     startTimeBudget();
     startTelegram();
     startReminderScheduler();
+    startActivityWatchSync();
 
     if (startHidden || (store.getSettings().minimizeToTray && app.getLoginItemSettings().wasOpenedAtLogin)) {
       if (win) win.hide();
@@ -228,12 +230,21 @@ function bootstrap() {
     try { globalShortcut.unregisterAll(); } catch (e) { /* ignore */ }
     taskmgrBlock.unblock(); // never quit while leaving Task Manager blocked
     if (reminderScheduler) clearInterval(reminderScheduler);
+    if (awTimer) clearInterval(awTimer);
     browserBridge.stop();
     localApi.stop();
     store.flush();
     store.releaseOwnership(); // let the next instance take over immediately
     log.sessionEnd('before-quit'); // clears running.flag => next start reads "clean"
   });
+}
+
+// ---- ActivityWatch import (read-only; see activityWatch.js) -----------------
+let awTimer = null;
+function startActivityWatchSync() {
+  const run = () => activityWatch.sync(store); // never throws; the next tracker tick refreshes the UI
+  setTimeout(run, 15000); // let the tracker settle first
+  awTimer = setInterval(run, 60 * 60 * 1000);
 }
 
 // ---- window ---------------------------------------------------------------

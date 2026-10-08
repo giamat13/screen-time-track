@@ -1,0 +1,42 @@
+name: release
+# Push a tag like v1.0.0 (it must equal package.json "version") to build ScreenTime-Setup-<version>.exe and attach it to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:        # run it by hand on main: the tag vX.Y.Z (from package.json) is created by the release itself
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Tag matches package.json
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != version v$v"; exit 1; }
+          fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "TAG=v$v" >> "$GITHUB_ENV"
+      - run: npm run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes=docs/release-notes-v${VERSION}.md
+          [ -f "$notes" ] || { echo "missing $notes"; exit 1; }
+          gh release create "${TAG}" --target "${GITHUB_SHA}" "dist/ScreenTime-Setup-${VERSION}.exe" --title "Screen Time ${VERSION}" --notes-file "$notes"
